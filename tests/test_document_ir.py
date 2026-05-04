@@ -9,8 +9,6 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from pydantic import ValidationError
-
 THIS_DIR = Path(__file__).resolve().parent
 SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -36,6 +34,7 @@ from document_processor import (
     read_document,
 )
 from document_processor.core.hwpx_structured_exporter import export_hwpx_structured_mapping
+import document_processor.models as document_models
 
 
 class DocumentIRTests(unittest.TestCase):
@@ -113,13 +112,23 @@ class DocumentIRTests(unittest.TestCase):
         self.assertIn("ImageIR", str(content_annotation))
         self.assertIn("TableIR", str(content_annotation))
 
-    def test_table_ir_rejects_self_referential_continuation_ids(self) -> None:
-        with self.assertRaises(ValidationError):
-            TableIR(node_id="tbl_a", previous_table_id="tbl_a")
-        with self.assertRaises(ValidationError):
-            TableIR(node_id="tbl_a", next_table_id="tbl_a")
+    def test_semantic_models_are_not_public_exports(self) -> None:
+        import document_processor
 
-    def test_to_semantic_returns_model_dict_and_json_with_markdown_tables(self) -> None:
+        self.assertFalse(hasattr(document_processor, "SemanticBlock"))
+        self.assertFalse(hasattr(document_processor, "SemanticDocument"))
+        self.assertFalse(hasattr(document_processor, "SemanticBlockIR"))
+        self.assertFalse(hasattr(document_processor, "SemanticIR"))
+        self.assertNotIn("SemanticBlock", document_processor.__all__)
+        self.assertNotIn("SemanticDocument", document_processor.__all__)
+        self.assertNotIn("SemanticBlockIR", document_processor.__all__)
+        self.assertNotIn("SemanticIR", document_processor.__all__)
+        self.assertNotIn("SemanticBlock", document_models.__all__)
+        self.assertNotIn("SemanticDocument", document_models.__all__)
+        self.assertNotIn("SemanticBlockIR", document_models.__all__)
+        self.assertNotIn("SemanticIR", document_models.__all__)
+
+    def test_to_semantic_returns_model_with_markdown_tables(self) -> None:
         doc_ir = build_doc_ir_from_mapping(
             self._sample_mapping(),
             source_path="sample.pdf",
@@ -149,6 +158,8 @@ class DocumentIRTests(unittest.TestCase):
 
         semantic = doc_ir.to_semantic()
 
+        self.assertEqual(type(semantic).__name__, "SemanticIR")
+        self.assertEqual(type(semantic.blocks[0]).__name__, "SemanticBlockIR")
         self.assertEqual(semantic.doc_id, "doc_1")
         self.assertEqual(semantic.source_path, "sample.pdf")
         self.assertEqual(semantic.source_doc_type, "pdf")
@@ -156,8 +167,8 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual(semantic.blocks[0].text, "Hello World")
         self.assertEqual(semantic.blocks[0].page_number, 1)
         self.assertEqual(semantic.blocks[0].bbox.left_pt, 10)
-        self.assertEqual(semantic.blocks[1].id, table.node_id)
-        self.assertEqual(semantic.blocks[1].path, table.native_anchor.debug_path)
+        self.assertEqual(semantic.blocks[1].node_id, table.node_id)
+        self.assertEqual(semantic.blocks[1].debug_path, table.native_anchor.debug_path)
         self.assertEqual(semantic.blocks[1].bbox.right_pt, 210)
         self.assertIn("| col1 | col2 |", semantic.blocks[1].text)
         self.assertIn("| A1 | B1 |", semantic.blocks[1].text)
@@ -166,14 +177,17 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual(semantic.blocks[2].text, "Sample image")
         self.assertEqual(semantic.blocks[2].bbox.top_pt, 90)
 
-        semantic_dict = doc_ir.to_semantic(format="dict")
+        semantic_dict = semantic.model_dump(mode="json", exclude_none=True)
         self.assertIsInstance(semantic_dict, dict)
         self.assertEqual(semantic_dict["blocks"][0]["bbox"]["bottom_pt"], 20)
         self.assertNotIn("previous_table_id", semantic_dict["blocks"][0])
         self.assertEqual(semantic_dict["blocks"][1]["next_table_id"], "tbl_next")
 
-        semantic_json = doc_ir.to_semantic(format="json", indent=2)
+        semantic_json = semantic.model_dump_json(exclude_none=True, indent=2)
         self.assertEqual(json.loads(semantic_json)["blocks"][1]["previous_table_id"], "tbl_previous")
+
+        with self.assertRaises(TypeError):
+            doc_ir.to_semantic(format="dict")
 
     def test_from_file_docx_path_and_file_object(self) -> None:
         from docx import Document

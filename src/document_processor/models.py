@@ -8,7 +8,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
 from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
@@ -16,7 +16,6 @@ from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunS
 T = TypeVar("T", bound=BaseModel)
 NodeKind: TypeAlias = Literal["paragraph", "run", "image", "table", "cell"]
 SemanticBlockKind: TypeAlias = Literal["paragraph", "table", "image"]
-SemanticFormat: TypeAlias = Literal["model", "dict", "json"]
 
 
 _NODE_ID_PREFIXES: dict[NodeKind, str] = {
@@ -171,11 +170,11 @@ class PageInfo(BaseModel):
     margin_bottom_pt: float | None = None
 
 
-class SemanticBlock(BaseModel):
+class SemanticBlockIR(BaseModel):
     """Chunking/search-friendly content block."""
 
-    id: str | None = None
-    path: str | None = None
+    node_id: str | None = None
+    debug_path: str | None = None
     kind: SemanticBlockKind
     page_number: int | None = None
     bbox: BoundingBox | None = None
@@ -184,13 +183,13 @@ class SemanticBlock(BaseModel):
     next_table_id: str | None = None
 
 
-class SemanticDocument(BaseModel):
+class SemanticIR(BaseModel):
     """Lightweight semantic projection of DocIR."""
 
     doc_id: str | None = None
     source_path: str | None = None
     source_doc_type: str | None = None
-    blocks: list[SemanticBlock] = Field(default_factory=list)
+    blocks: list[SemanticBlockIR] = Field(default_factory=list)
 
 
 class ImageIR(BaseModel, Generic[T]):
@@ -316,13 +315,6 @@ class TableIR(BaseModel, Generic[T]):
         if self.node_id is None and self.native_anchor is not None:
             self.node_id = _stable_node_id("table", _node_anchor_path(self))
 
-    @model_validator(mode="after")
-    def _validate_continuation_ids(self):
-        for field_name in ("previous_table_id", "next_table_id"):
-            if self.node_id is not None and getattr(self, field_name) == self.node_id:
-                raise ValueError(f"{field_name} cannot reference the same table")
-        return self
-
     @computed_field
     def markdown(self) -> str:
         return _render_table_markdown(self)
@@ -353,30 +345,15 @@ class DocIR(BaseModel, Generic[T]):
         image_id = image_or_id if isinstance(image_or_id, str) else image_or_id.image_id
         return self.assets.get(image_id)
 
-    def to_semantic(
-        self,
-        *,
-        format: SemanticFormat = "model",
-        **kwargs: Any,
-    ) -> SemanticDocument | dict[str, Any] | str:
+    def to_semantic(self) -> SemanticIR:
         """Return a lightweight semantic projection for chunking/search."""
         self.ensure_node_identity()
-        semantic = SemanticDocument(
+        return SemanticIR(
             doc_id=self.doc_id,
             source_path=self.source_path,
             source_doc_type=self.source_doc_type,
             blocks=_semantic_blocks(self),
         )
-
-        if format == "model":
-            return semantic
-        if format == "dict":
-            exclude_none = kwargs.pop("exclude_none", True)
-            return semantic.model_dump(mode="json", exclude_none=exclude_none, **kwargs)
-        if format == "json":
-            exclude_none = kwargs.pop("exclude_none", True)
-            return semantic.model_dump_json(exclude_none=exclude_none, **kwargs)
-        raise ValueError(f"Unsupported semantic format: {format}")
 
     def ensure_node_identity(self) -> "DocIR":
         """Populate stable node IDs and native anchors for all addressable nodes."""
@@ -598,21 +575,21 @@ TableCellIR.model_rebuild()
 TableIR.model_rebuild()
 
 
-def _semantic_blocks(doc: DocIR) -> list[SemanticBlock]:
-    blocks: list[SemanticBlock] = []
+def _semantic_blocks(doc: DocIR) -> list[SemanticBlockIR]:
+    blocks: list[SemanticBlockIR] = []
     for paragraph in doc.paragraphs:
         blocks.extend(_paragraph_semantic_blocks(paragraph))
     return blocks
 
 
-def _paragraph_semantic_blocks(paragraph: ParagraphIR) -> list[SemanticBlock]:
-    blocks: list[SemanticBlock] = []
+def _paragraph_semantic_blocks(paragraph: ParagraphIR) -> list[SemanticBlockIR]:
+    blocks: list[SemanticBlockIR] = []
     paragraph_text = _paragraph_text_for_semantic(paragraph)
     if paragraph_text:
         blocks.append(
-            SemanticBlock(
-                id=paragraph.node_id,
-                path=_node_debug_path(paragraph),
+            SemanticBlockIR(
+                node_id=paragraph.node_id,
+                debug_path=_node_debug_path(paragraph),
                 kind="paragraph",
                 page_number=paragraph.page_number,
                 bbox=paragraph.bbox,
@@ -622,9 +599,9 @@ def _paragraph_semantic_blocks(paragraph: ParagraphIR) -> list[SemanticBlock]:
 
     for image in paragraph.images:
         blocks.append(
-            SemanticBlock(
-                id=image.node_id,
-                path=_node_debug_path(image),
+            SemanticBlockIR(
+                node_id=image.node_id,
+                debug_path=_node_debug_path(image),
                 kind="image",
                 page_number=paragraph.page_number,
                 bbox=image.bbox,
@@ -634,9 +611,9 @@ def _paragraph_semantic_blocks(paragraph: ParagraphIR) -> list[SemanticBlock]:
 
     for table in paragraph.tables:
         blocks.append(
-            SemanticBlock(
-                id=table.node_id,
-                path=_node_debug_path(table),
+            SemanticBlockIR(
+                node_id=table.node_id,
+                debug_path=_node_debug_path(table),
                 kind="table",
                 page_number=_table_page_number(table, paragraph.page_number),
                 bbox=table.bbox,
@@ -799,8 +776,6 @@ __all__ = [
     "ParagraphContentNode",
     "ParagraphIR",
     "RunIR",
-    "SemanticBlock",
-    "SemanticDocument",
     "TableCellIR",
     "TableIR",
 ]

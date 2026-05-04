@@ -10,7 +10,7 @@ from document_processor import DocIR
 
 doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
 
-semantic = doc.to_semantic(format="dict")
+semantic = doc.to_semantic().model_dump(mode="json", exclude_none=True)
 html = doc.to_html(title="PDF Preview")
 ```
 
@@ -35,8 +35,9 @@ Use semantic output from the parsed `DocIR` for chunking, RAG, and downstream
 processing.
 
 ```python
-semantic = doc.to_semantic(format="dict")
-semantic_json = doc.to_semantic(format="json", indent=2)
+semantic = doc.to_semantic()
+semantic_dict = semantic.model_dump(mode="json", exclude_none=True)
+semantic_json = semantic.model_dump_json(exclude_none=True, indent=2)
 ```
 
 ## HTML Preview
