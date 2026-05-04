@@ -45,12 +45,25 @@ from ..meta import (
 
 _STRIP_CONNECTOR_CHARS = frozenset({"➡", "→", "➜", "➝", "←", "↑", "↓", "↔", "↕", ""})
 _STRIP_ROW_TOLERANCE_PT = 18.0
+_LINE_CENTER_TOLERANCE_RATIO = 0.55
+_LINE_MIN_CENTER_TOLERANCE_PT = 2.0
+_LINE_OVERLAP_RATIO = 0.45
+_SPACE_WIDTH_FONT_RATIO = 0.5
+_MAX_RECONSTRUCTED_SPACES = 80
 
 
 @dataclass(frozen=True)
 class _OdlNodeGeometry:
     page_number: int | None = None
     bounding_box: PdfBoundingBox | None = None
+
+
+@dataclass(frozen=True)
+class _OdlTableContinuationLink:
+    paragraph_index: int
+    raw_table_id: str
+    previous_raw_table_id: str | None = None
+    next_raw_table_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +185,13 @@ def _page_number_from_node(node: dict[str, Any]) -> int | None:
     return coerce_int(node.get("page number"))
 
 
+def _raw_table_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _node_geometry(node: dict[str, Any]) -> _OdlNodeGeometry | None:
     geometry = _OdlNodeGeometry(
         page_number=_page_number_from_node(node),
@@ -207,12 +227,15 @@ def _coarse_border_css_from_node(
     bool_key: str,
     legacy_key: str,
 ) -> str | None:
+    explicit = _border_css(node.get(legacy_key))
+    if explicit:
+        return explicit
     has_border = _coerce_bool(node.get(bool_key))
     if has_border is True:
         return "1px solid"
     if has_border is False:
         return None
-    return _border_css(node.get(legacy_key))
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -245,9 +268,10 @@ def _paragraph_from_text_node(
         style_node=style_source,
         run_geometry=resolved_run_geometry,
     ) if text else []
+    paragraph_text = _reconstructed_text_for_node(text, content) if content else text
     return ParagraphIR(
         **_pdf_node_kwargs("paragraph", unit_id),
-        text=text,
+        text=paragraph_text,
         page_number=_page_number_from_node(style_source) or _page_number_from_node(node) or (resolved_geometry.page_number if resolved_geometry is not None else None) or default_page_number,
         bbox=resolved_geometry.bounding_box if resolved_geometry is not None else None,
         para_style=_para_style_from_node(style_source),
@@ -349,6 +373,17 @@ def _text_spans_from_node(node: dict[str, Any]) -> list[dict[str, Any]]:
     return [span for span in spans if isinstance(span, dict) and isinstance(span.get("content"), str)]
 
 
+def _reconstructed_text_for_node(raw_text: str, runs: list[RunIR]) -> str:
+    reconstructed = "".join(run.text for run in runs)
+    if not raw_text:
+        return reconstructed
+    if reconstructed == raw_text:
+        return raw_text
+    if "".join(raw_text.split()) == "".join(reconstructed.split()):
+        return reconstructed
+    return raw_text
+
+
 def _runs_from_text_node(
     node: dict[str, Any],
     *,
@@ -384,15 +419,19 @@ def _runs_from_text_node(
             continue
         span_style_node = _merged_style_node(span, style_node)
         span_geometry = _compose_node_geometry(_node_geometry(span), run_geometry)
+        span_bbox = span_geometry.bounding_box if span_geometry is not None else None
+        run_style = _run_style_from_node(span_style_node)
+        span_text = _expand_wide_space_span_text(span_text, bbox=span_bbox, style=run_style)
         runs.append(
             RunIR(
                 **_pdf_node_kwargs("run", f"{unit_id}.r{index}"),
                 text=span_text,
-                bbox=span_geometry.bounding_box if span_geometry is not None else None,
-                run_style=_run_style_from_node(span_style_node),
+                bbox=span_bbox,
+                run_style=run_style,
             )
         )
     if runs:
+        runs = _reconstruct_visual_run_text(runs, raw_text=text)
         return _merge_adjacent_runs(runs)
     if not text:
         return []
@@ -410,6 +449,88 @@ def _runs_from_text_node(
 # Run post-processing helpers
 # ---------------------------------------------------------------------------
 
+def _reconstruct_visual_run_text(runs: list[RunIR], *, raw_text: str) -> list[RunIR]:
+    if not runs:
+        return []
+    raw_positions = _raw_text_positions(raw_text, runs)
+    reconstructed = [runs[0]]
+    for index, source_run in enumerate(runs[1:], start=1):
+        run = source_run
+        previous = reconstructed[-1]
+        if not _runs_on_same_visual_line(previous, run):
+            separator = _raw_separator_between_runs(
+                raw_text,
+                raw_positions[index - 1],
+                raw_positions[index],
+            )
+            if separator and _needs_separator(previous.text, run.text, separator):
+                run = run.model_copy(update={"text": f"{separator}{run.text}"})
+            reconstructed.append(run)
+            continue
+
+        reconstructed.append(run)
+    return reconstructed
+
+
+def _raw_text_positions(raw_text: str, runs: list[RunIR]) -> list[tuple[int, int] | None]:
+    positions: list[tuple[int, int] | None] = []
+    cursor = 0
+    for run in runs:
+        if not run.text:
+            positions.append((cursor, cursor))
+            continue
+        start = raw_text.find(run.text, cursor)
+        if start < 0:
+            positions.append(None)
+            continue
+        end = start + len(run.text)
+        positions.append((start, end))
+        cursor = end
+    return positions
+
+
+def _raw_separator_between_runs(
+    raw_text: str,
+    left_position: tuple[int, int] | None,
+    right_position: tuple[int, int] | None,
+) -> str:
+    if left_position is None or right_position is None:
+        return ""
+    left_end = left_position[1]
+    right_start = right_position[0]
+    if right_start < left_end:
+        return ""
+    return raw_text[left_end:right_start]
+
+
+def _needs_separator(left_text: str, right_text: str, separator: str) -> bool:
+    if separator.isspace():
+        return not left_text.endswith((" ", "\t", "\n")) and not right_text.startswith((" ", "\t", "\n"))
+    return not right_text.startswith(separator)
+
+
+def _expand_wide_space_span_text(
+    text: str,
+    *,
+    bbox: PdfBoundingBox | None,
+    style: RunStyleInfo | None,
+) -> str:
+    if not text or not text.isspace() or "\n" in text or "\r" in text:
+        return text
+    if bbox is None:
+        return text
+
+    width_pt = max(bbox.right_pt - bbox.left_pt, 0.0)
+    if width_pt <= 0:
+        return text
+
+    space_width_pt = _estimated_space_width_from_style_or_bbox(style, bbox)
+    space_count = min(max(round(width_pt / space_width_pt), len(text)), _MAX_RECONSTRUCTED_SPACES)
+    if space_count <= len(text):
+        return text
+    return " " * space_count
+
+
 def _merge_adjacent_runs(runs: list[RunIR]) -> list[RunIR]:
     if not runs:
         return []
@@ -425,13 +546,58 @@ def _merge_adjacent_runs(runs: list[RunIR]) -> list[RunIR]:
 
 
 def _can_merge_runs(left: RunIR, right: RunIR) -> bool:
-    return _run_style_signature(left.run_style) == _run_style_signature(right.run_style)
+    if _run_style_signature(left.run_style) != _run_style_signature(right.run_style):
+        return False
+    if left.text.endswith("\n") or right.text.startswith("\n"):
+        return False
+    if _is_expanded_space_fill_run(left) != _is_expanded_space_fill_run(right):
+        return False
+    return _runs_on_same_visual_line(left, right)
 
 
 def _run_style_signature(style: RunStyleInfo | None) -> dict[str, Any] | None:
     if style is None:
         return None
     return style.model_dump(exclude_defaults=True, exclude_none=True)
+
+
+def _is_expanded_space_fill_run(run: RunIR) -> bool:
+    return len(run.text) > 1 and run.text.isspace() and "\n" not in run.text and "\r" not in run.text
+
+
+def _runs_on_same_visual_line(left: RunIR, right: RunIR) -> bool:
+    left_bbox = left.bbox
+    right_bbox = right.bbox
+    if left_bbox is None or right_bbox is None:
+        return True
+
+    overlap = min(left_bbox.top_pt, right_bbox.top_pt) - max(left_bbox.bottom_pt, right_bbox.bottom_pt)
+    left_height = _bbox_height(left_bbox)
+    right_height = _bbox_height(right_bbox)
+    shorter_height = min(left_height, right_height)
+    if shorter_height > 0 and overlap / shorter_height >= _LINE_OVERLAP_RATIO:
+        return True
+
+    left_center = (left_bbox.bottom_pt + left_bbox.top_pt) / 2.0
+    right_center = (right_bbox.bottom_pt + right_bbox.top_pt) / 2.0
+    tolerance = max(shorter_height * _LINE_CENTER_TOLERANCE_RATIO, _LINE_MIN_CENTER_TOLERANCE_PT)
+    return abs(left_center - right_center) <= tolerance
+
+
+def _bbox_height(bbox: PdfBoundingBox) -> float:
+    return max(bbox.top_pt - bbox.bottom_pt, 0.0)
+
+
+def _estimated_space_width_from_style_or_bbox(
+    style: RunStyleInfo | None,
+    bbox: PdfBoundingBox,
+) -> float:
+    if style is not None and style.size_pt is not None and style.size_pt > 0:
+        return max(style.size_pt * _SPACE_WIDTH_FONT_RATIO, 1.0)
+    height = _bbox_height(bbox)
+    if height > 0:
+        return max(height * _SPACE_WIDTH_FONT_RATIO, 1.0)
+    return 4.0
 
 
 def _merge_bounding_boxes(
@@ -1092,6 +1258,55 @@ def _canonicalize_table_unit_ids(table: TableIR, *, unit_id: str) -> None:
         cell.recompute_text()
 
 
+def _record_table_continuation_link(
+    records: list[_OdlTableContinuationLink],
+    node: dict[str, Any],
+    *,
+    paragraph_index: int,
+) -> None:
+    raw_table_id = _raw_table_id(node.get("id"))
+    if raw_table_id is None:
+        return
+    records.append(
+        _OdlTableContinuationLink(
+            paragraph_index=paragraph_index,
+            raw_table_id=raw_table_id,
+            previous_raw_table_id=_raw_table_id(node.get("previous table id")),
+            next_raw_table_id=_raw_table_id(node.get("next table id")),
+        )
+    )
+
+
+def _apply_table_continuation_links(
+    paragraphs: list[ParagraphIR],
+    records: list[_OdlTableContinuationLink],
+) -> None:
+    raw_to_docir_table_id: dict[str, str] = {}
+    record_tables: list[tuple[_OdlTableContinuationLink, TableIR]] = []
+    for record in records:
+        if record.paragraph_index >= len(paragraphs):
+            continue
+        tables = paragraphs[record.paragraph_index].tables
+        if not tables:
+            continue
+        table = tables[0]
+        record_tables.append((record, table))
+        if table.node_id is not None:
+            raw_to_docir_table_id[record.raw_table_id] = table.node_id
+
+    for record, table in record_tables:
+        table.previous_table_id = (
+            raw_to_docir_table_id.get(record.previous_raw_table_id)
+            if record.previous_raw_table_id is not None
+            else None
+        )
+        table.next_table_id = (
+            raw_to_docir_table_id.get(record.next_raw_table_id)
+            if record.next_raw_table_id is not None
+            else None
+        )
+
+
 def build_doc_ir_from_odl_result(
     raw_document: dict[str, Any],
     *,
@@ -1111,6 +1326,7 @@ def build_doc_ir_from_odl_result(
 
     assets: dict[str, ImageAsset] = {}
     paragraphs: list[ParagraphIR] = []
+    table_continuation_links: list[_OdlTableContinuationLink] = []
 
     order = 0
     for node in raw_document.get("kids", []):
@@ -1119,6 +1335,7 @@ def build_doc_ir_from_odl_result(
         if node_type == "table":
             order += 1
             node_geometry = _node_geometry(node)
+            paragraph_index = len(paragraphs)
             paragraphs.append(
                 ParagraphIR(
                     **_pdf_node_kwargs("paragraph", unit_id),
@@ -1134,6 +1351,11 @@ def build_doc_ir_from_odl_result(
                                         )
                     ],
                 )
+            )
+            _record_table_continuation_link(
+                table_continuation_links,
+                node,
+                paragraph_index=paragraph_index,
             )
             continue
         if node_type == "image":
@@ -1170,6 +1392,7 @@ def build_doc_ir_from_odl_result(
                 if child.get("type") == "table":
                     order += 1
                     child_geometry = _node_geometry(child)
+                    paragraph_index = len(paragraphs)
                     paragraphs.append(
                         ParagraphIR(
                             **_pdf_node_kwargs("paragraph", child_unit_id),
@@ -1185,6 +1408,11 @@ def build_doc_ir_from_odl_result(
                                                         )
                             ],
                         )
+                    )
+                    _record_table_continuation_link(
+                        table_continuation_links,
+                        child,
+                        paragraph_index=paragraph_index,
                     )
                     continue
                 if child.get("type") == "list":
@@ -1215,6 +1443,7 @@ def build_doc_ir_from_odl_result(
     if resolved_doc_id and "." in resolved_doc_id:
         resolved_doc_id = Path(resolved_doc_id).stem
     canonical_paragraphs = _canonicalize_top_level_paragraphs(paragraphs)
+    _apply_table_continuation_links(canonical_paragraphs, table_continuation_links)
     return resolved_doc_cls(
         doc_id=resolved_doc_id,
         source_path=resolved_source_path,

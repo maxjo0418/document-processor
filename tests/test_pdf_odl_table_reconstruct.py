@@ -21,6 +21,8 @@ def _dotted_primitive(
     bottom: float,
     right: float,
     top: float,
+    stroke_color: str = "#000000ff",
+    stroke_width_pt: float = 1.0,
 ) -> PdfPreviewVisualPrimitive:
     return PdfPreviewVisualPrimitive(
         page_number=1,
@@ -29,8 +31,8 @@ def _dotted_primitive(
         bounding_box=PdfBoundingBox(
             left_pt=left, bottom_pt=bottom, right_pt=right, top_pt=top
         ),
-        stroke_color="#000000ff",
-        stroke_width_pt=1.0,
+        stroke_color=stroke_color,
+        stroke_width_pt=stroke_width_pt,
         has_stroke=True,
         candidate_roles=[f"segmented_{orientation}_rule"],
     )
@@ -123,6 +125,28 @@ class DottedRuleSplitTests(unittest.TestCase):
         self.assertEqual(top_cell["paragraphs"][0]["content"], "Top")
         self.assertEqual(bottom_cell["paragraphs"][0]["content"], "Bottom")
 
+    def test_horizontal_dotted_rule_records_border_style_on_split_cells(self) -> None:
+        table = _single_cell_table(
+            paragraphs=[
+                _paragraph("Top", left=14.0, bottom=58.0, right=108.0, top=82.0),
+                _paragraph("Bottom", left=14.0, bottom=18.0, right=108.0, top=42.0),
+            ]
+        )
+        dotted = _dotted_primitive(
+            orientation="horizontal",
+            left=10.0,
+            bottom=49.5,
+            right=110.0,
+            top=50.5,
+            stroke_color="#123456ff",
+            stroke_width_pt=1.5,
+        )
+        _apply_dotted_splits(table, dotted_h=[dotted], dotted_v=[])
+        top_cell = table["rows"][0]["cells"][0]
+        bottom_cell = table["rows"][1]["cells"][0]
+        self.assertEqual(top_cell["border bottom"], "1.5px dotted #123456")
+        self.assertEqual(bottom_cell["border top"], "1.5px dotted #123456")
+
     def test_vertical_dotted_rule_splits_cell_into_two_columns(self) -> None:
         table = _single_cell_table(
             paragraphs=[
@@ -138,6 +162,27 @@ class DottedRuleSplitTests(unittest.TestCase):
         self.assertEqual(len(cells), 2)
         self.assertEqual(cells[0]["paragraphs"][0]["content"], "Left")
         self.assertEqual(cells[1]["paragraphs"][0]["content"], "Right")
+
+    def test_vertical_dotted_rule_records_border_style_on_split_cells(self) -> None:
+        table = _single_cell_table(
+            paragraphs=[
+                _paragraph("Left", left=14.0, bottom=40.0, right=55.0, top=60.0),
+                _paragraph("Right", left=65.0, bottom=40.0, right=106.0, top=60.0),
+            ]
+        )
+        dotted = _dotted_primitive(
+            orientation="vertical",
+            left=59.5,
+            bottom=10.0,
+            right=60.5,
+            top=90.0,
+            stroke_color="#abcdef",
+            stroke_width_pt=2.0,
+        )
+        _apply_dotted_splits(table, dotted_h=[], dotted_v=[dotted])
+        cells = table["rows"][0]["cells"]
+        self.assertEqual(cells[0]["border right"], "2px dotted #abcdef")
+        self.assertEqual(cells[1]["border left"], "2px dotted #abcdef")
 
     def test_dotted_rule_along_existing_boundary_is_ignored(self) -> None:
         table = _single_cell_table(

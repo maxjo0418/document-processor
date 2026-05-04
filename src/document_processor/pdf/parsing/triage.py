@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from ..config import PdfTriageConfig
 from .probe import (
     FULL_OCR_CONTENT_IMAGE_RATIO_THRESHOLD,
     FULL_OCR_IMAGE_RATIO_THRESHOLD,
@@ -26,13 +25,7 @@ class PageDecision:
     page_class: PageClass
 
 
-def decide_page(page_profile: PageProfile, config: PdfTriageConfig) -> PageDecision:
-    if config.force_complex_layout or config.force_complex_table:
-        return PageDecision(
-            page_number=page_profile.page_number,
-            page_class=PageClass.STRUCTURED,
-        )
-
+def decide_page(page_profile: PageProfile) -> PageDecision:
     if page_profile.image_area_ratio >= FULL_OCR_IMAGE_RATIO_THRESHOLD:
         return PageDecision(
             page_number=page_profile.page_number,

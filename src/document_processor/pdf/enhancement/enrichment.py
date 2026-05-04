@@ -3,76 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 
 from ...models import DocIR, ParagraphIR, TableCellIR, TableIR
 from ...style_types import CellStyleInfo
 from .border_inference import (
     infer_cell_background_from_rendered_page,
-    infer_cell_borders_from_rendered_page,
     render_pdf_pages_to_color,
-    render_pdf_pages_to_grayscale,
 )
-
-_COARSE_BORDER_RE = re.compile(r"^\s*\d+px\s+solid\s*$", re.IGNORECASE)
-
-
-def enrich_pdf_table_borders(
-    doc_ir: DocIR,
-    *,
-    pdf_path: str | Path | None = None,
-    dpi: int = 144,
-) -> DocIR:
-    if (doc_ir.source_doc_type or "").lower() != "pdf":
-        return doc_ir
-
-    resolved_pdf_path = Path(pdf_path or doc_ir.source_path or "").expanduser()
-    if not resolved_pdf_path.exists():
-        return doc_ir
-
-    page_heights = {
-        page.page_number: page.height_pt
-        for page in doc_ir.pages
-        if page.height_pt is not None
-    }
-    candidates = list(_iter_border_candidates(doc_ir, page_heights=page_heights))
-    if not candidates:
-        return doc_ir
-
-    rendered_pages = render_pdf_pages_to_grayscale(
-        resolved_pdf_path,
-        page_numbers={candidate[0] for candidate in candidates},
-        dpi=dpi,
-    )
-
-    for page_number, cell, page_height_pt in candidates:
-        rendered_page = rendered_pages.get(page_number)
-        cell_meta = getattr(cell, "meta", None)
-        cell_bbox = getattr(cell, "bbox", None) or getattr(cell_meta, "bounding_box", None)
-        if rendered_page is None or cell_bbox is None:
-            continue
-
-        inferred = infer_cell_borders_from_rendered_page(
-            rendered_page,
-            bbox=cell_bbox,
-            page_height_pt=page_height_pt,
-            dpi=dpi,
-        )
-        # Parser-provided coarse borders such as "1px solid" are useful for
-        # topology, but the raster pass can refine them into actual visible edge
-        # width/color values when they exist on the page.
-        style = cell.cell_style.model_copy(deep=True) if cell.cell_style is not None else CellStyleInfo()
-        if _should_refine_border(style.border_top, inferred["top"]):
-            style.border_top = inferred["top"]
-        if _should_refine_border(style.border_bottom, inferred["bottom"]):
-            style.border_bottom = inferred["bottom"]
-        if _should_refine_border(style.border_left, inferred["left"]):
-            style.border_left = inferred["left"]
-        if _should_refine_border(style.border_right, inferred["right"]):
-            style.border_right = inferred["right"]
-        cell.cell_style = style
-
-    return doc_ir
 
 
 def enrich_pdf_table_backgrounds(
@@ -93,7 +30,7 @@ def enrich_pdf_table_backgrounds(
         for page in doc_ir.pages
         if page.height_pt is not None
     }
-    candidates = list(_iter_border_candidates(doc_ir, page_heights=page_heights))
+    candidates = list(_iter_table_cell_candidates(doc_ir, page_heights=page_heights))
     if not candidates:
         return doc_ir
 
@@ -127,21 +64,13 @@ def enrich_pdf_table_backgrounds(
     return doc_ir
 
 
-def _iter_border_candidates(
+def _iter_table_cell_candidates(
     doc_ir: DocIR,
     *,
     page_heights: dict[int, float],
 ):
     for paragraph in doc_ir.paragraphs:
         yield from _iter_paragraph_table_candidates(paragraph, page_heights=page_heights)
-
-
-def _should_refine_border(current: str | None, inferred: str | None) -> bool:
-    if inferred is None:
-        return False
-    if current is None:
-        return True
-    return bool(_COARSE_BORDER_RE.match(current))
 
 
 def _iter_paragraph_table_candidates(
@@ -172,4 +101,4 @@ def _iter_table_candidates(
             yield from _iter_paragraph_table_candidates(paragraph, page_heights=page_heights)
 
 
-__all__ = ["enrich_pdf_table_backgrounds", "enrich_pdf_table_borders"]
+__all__ = ["enrich_pdf_table_backgrounds"]

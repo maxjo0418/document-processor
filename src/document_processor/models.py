@@ -15,6 +15,7 @@ from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunS
 
 T = TypeVar("T", bound=BaseModel)
 NodeKind: TypeAlias = Literal["paragraph", "run", "image", "table", "cell"]
+SemanticBlockKind: TypeAlias = Literal["paragraph", "table", "image"]
 
 
 _NODE_ID_PREFIXES: dict[NodeKind, str] = {
@@ -169,6 +170,28 @@ class PageInfo(BaseModel):
     margin_bottom_pt: float | None = None
 
 
+class SemanticBlockIR(BaseModel):
+    """Chunking/search-friendly content block."""
+
+    node_id: str | None = None
+    debug_path: str | None = None
+    kind: SemanticBlockKind
+    page_number: int | None = None
+    bbox: BoundingBox | None = None
+    text: str = ""
+    previous_table_id: str | None = None
+    next_table_id: str | None = None
+
+
+class SemanticIR(BaseModel):
+    """Lightweight semantic projection of DocIR."""
+
+    doc_id: str | None = None
+    source_path: str | None = None
+    source_doc_type: str | None = None
+    blocks: list[SemanticBlockIR] = Field(default_factory=list)
+
+
 class ImageIR(BaseModel, Generic[T]):
     """Image placement node inside paragraph-like content."""
 
@@ -279,6 +302,8 @@ class TableIR(BaseModel, Generic[T]):
     meta: T | None = None
 
     node_id: str | None = None
+    previous_table_id: str | None = None
+    next_table_id: str | None = None
     row_count: int = 0
     col_count: int = 0
     bbox: BoundingBox | None = None
@@ -319,6 +344,16 @@ class DocIR(BaseModel, Generic[T]):
     def get_image_asset(self, image_or_id: ImageIR | str) -> ImageAsset[T] | None:
         image_id = image_or_id if isinstance(image_or_id, str) else image_or_id.image_id
         return self.assets.get(image_id)
+
+    def to_semantic(self) -> SemanticIR:
+        """Return a lightweight semantic projection for chunking/search."""
+        self.ensure_node_identity()
+        return SemanticIR(
+            doc_id=self.doc_id,
+            source_path=self.source_path,
+            source_doc_type=self.source_doc_type,
+            blocks=_semantic_blocks(self),
+        )
 
     def ensure_node_identity(self) -> "DocIR":
         """Populate stable node IDs and native anchors for all addressable nodes."""
@@ -538,6 +573,78 @@ ParagraphContentNode: TypeAlias = RunIR | ImageIR | TableIR
 ParagraphIR.model_rebuild()
 TableCellIR.model_rebuild()
 TableIR.model_rebuild()
+
+
+def _semantic_blocks(doc: DocIR) -> list[SemanticBlockIR]:
+    blocks: list[SemanticBlockIR] = []
+    for paragraph in doc.paragraphs:
+        blocks.extend(_paragraph_semantic_blocks(paragraph))
+    return blocks
+
+
+def _paragraph_semantic_blocks(paragraph: ParagraphIR) -> list[SemanticBlockIR]:
+    blocks: list[SemanticBlockIR] = []
+    paragraph_text = _paragraph_text_for_semantic(paragraph)
+    if paragraph_text:
+        blocks.append(
+            SemanticBlockIR(
+                node_id=paragraph.node_id,
+                debug_path=_node_debug_path(paragraph),
+                kind="paragraph",
+                page_number=paragraph.page_number,
+                bbox=paragraph.bbox,
+                text=paragraph_text,
+            )
+        )
+
+    for image in paragraph.images:
+        blocks.append(
+            SemanticBlockIR(
+                node_id=image.node_id,
+                debug_path=_node_debug_path(image),
+                kind="image",
+                page_number=paragraph.page_number,
+                bbox=image.bbox,
+                text=_image_semantic_text(image),
+            )
+        )
+
+    for table in paragraph.tables:
+        blocks.append(
+            SemanticBlockIR(
+                node_id=table.node_id,
+                debug_path=_node_debug_path(table),
+                kind="table",
+                page_number=_table_page_number(table, paragraph.page_number),
+                bbox=table.bbox,
+                text=table.markdown,
+                previous_table_id=table.previous_table_id,
+                next_table_id=table.next_table_id,
+            )
+        )
+
+    return blocks
+
+
+def _paragraph_text_for_semantic(paragraph: ParagraphIR) -> str:
+    run_text = "".join(run.text for run in paragraph.runs).strip()
+    if run_text:
+        return run_text
+    if not paragraph.images and not paragraph.tables:
+        return paragraph.text.strip()
+    return ""
+
+
+def _image_semantic_text(image: ImageIR) -> str:
+    return image.alt_text or image.title or f"[image:{image.image_id}]"
+
+
+def _table_page_number(table: TableIR, fallback: int | None) -> int | None:
+    for cell in table.cells:
+        for paragraph in cell.paragraphs:
+            if paragraph.page_number is not None:
+                return paragraph.page_number
+    return fallback
 
 
 def _cell_rowspan(cell: TableCellIR) -> int:

@@ -12,6 +12,14 @@ if str(SRC_ROOT) not in sys.path:
 
 
 class PdfPreviewModuleApiTests(unittest.TestCase):
+    def test_pdf_root_does_not_export_internal_parsing_helpers(self) -> None:
+        module = importlib.import_module("document_processor.pdf")
+
+        self.assertEqual(getattr(module, "__all__", []), [])
+        self.assertFalse(hasattr(module, "parse_pdf_to_doc_ir"))
+        self.assertFalse(hasattr(module, "PdfParseConfig"))
+        self.assertFalse(hasattr(module, "export_pdf_local_outputs"))
+
     def test_preview_submodules_are_importable(self) -> None:
         for module_name in (
             "document_processor.pdf.preview.models",

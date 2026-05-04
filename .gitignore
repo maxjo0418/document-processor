@@ -3,7 +3,14 @@ results/
 document-spec-docs
 .codex
 docs/superpowers/
+docs/analysis/
 .vscode/
+
+# local PDF experiment docs 
+docs/opendataloader-pdf-line-art-experiment-plan.md
+docs/opendataloader-pdf-line-art-experiment-results.md
+docs/opendataloader-pdf-table-style-schema.md
+pdf-docir-pipeline.ipynb
 
 # PDF local development artifacts
 # `__pycache__/` is already ignored globally above, but keep this section so

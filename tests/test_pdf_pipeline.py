@@ -13,7 +13,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import DocIR, ParaStyleInfo, ParagraphIR, RunIR
-from document_processor.pdf import export_pdf_local_outputs
+from document_processor.pdf.config import PdfParseConfig
+from document_processor.pdf.local_outputs import export_pdf_local_outputs
 from document_processor.pdf.odl import (
     build_doc_ir_from_odl_result,
     convert_pdf_local,
@@ -27,6 +28,121 @@ from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
 
 class PdfPipelineTests(unittest.TestCase):
+    def test_pdf_parse_config_does_not_expose_raster_border_enrichment(self) -> None:
+        self.assertNotIn("infer_table_borders", PdfParseConfig.model_fields)
+        self.assertNotIn("table_border_dpi", PdfParseConfig.model_fields)
+
+    def test_pdf_parse_config_exposes_only_simple_public_options(self) -> None:
+        self.assertEqual(
+            set(PdfParseConfig.model_fields),
+            {"pages", "include_header_footer", "image_quality", "image_output"},
+        )
+
+    def test_pdf_parse_config_rejects_odl_internal_options(self) -> None:
+        with self.assertRaises(ValueError):
+            PdfParseConfig.model_validate({"table_method": "default"})
+
+    def test_build_doc_ir_from_odl_result_prefers_explicit_table_cell_border_css(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "bounding box": [10, 10, 110, 90],
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "page number": 1,
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "bounding box": [10, 10, 110, 90],
+                                    "has top border": True,
+                                    "has bottom border": True,
+                                    "border top": "1.5px dotted #123456",
+                                    "kids": [{"type": "paragraph", "content": "A1", "page number": 1}],
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        style = doc.paragraphs[0].tables[0].cells[0].cell_style
+        self.assertEqual(style.border_top, "1.5px dotted #123456")
+        self.assertEqual(style.border_bottom, "1px solid")
+
+    def test_build_doc_ir_from_odl_result_maps_table_continuation_ids_to_docir_table_ids(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "kids": [
+                {
+                    "type": "table",
+                    "id": 7,
+                    "page number": 1,
+                    "bounding box": [10, 10, 110, 90],
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "next table id": 11,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "page number": 1,
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "bounding box": [10, 10, 110, 90],
+                                    "kids": [{"type": "paragraph", "content": "A1", "page number": 1}],
+                                }
+                            ]
+                        }
+                    ],
+                },
+                {
+                    "type": "table",
+                    "id": 11,
+                    "page number": 2,
+                    "bounding box": [10, 10, 110, 90],
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "previous table id": 7,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "page number": 2,
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "bounding box": [10, 10, 110, 90],
+                                    "kids": [{"type": "paragraph", "content": "B1", "page number": 2}],
+                                }
+                            ]
+                        }
+                    ],
+                },
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        first_table = doc.paragraphs[0].tables[0]
+        second_table = doc.paragraphs[1].tables[0]
+        self.assertEqual(first_table.next_table_id, second_table.node_id)
+        self.assertIsNone(first_table.previous_table_id)
+        self.assertEqual(second_table.previous_table_id, first_table.node_id)
+        self.assertIsNone(second_table.next_table_id)
+        self.assertNotEqual(first_table.next_table_id, "11")
+        self.assertNotEqual(second_table.previous_table_id, "7")
+
     def test_parse_pdf_to_doc_ir_applies_preview_context_before_returning_doc(self) -> None:
         doc = DocIR(doc_id="sample", source_doc_type="pdf")
         preview_context = PdfPreviewContext()
@@ -569,6 +685,97 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(len(doc.paragraphs[0].runs), 1)
         self.assertEqual(doc.paragraphs[0].runs[0].text, "64\n65\n66 68 69390")
 
+    def test_build_doc_ir_from_odl_result_keeps_soft_visual_wraps_as_spaces(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "First line Second line",
+                    "page number": 1,
+                    "font": "Base Font",
+                    "font size": 12,
+                    "spans": [
+                        {
+                            "type": "text chunk",
+                            "content": "First line",
+                            "page number": 1,
+                            "bounding box": [10, 80, 58, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": "Second line",
+                            "page number": 1,
+                            "bounding box": [10, 62, 72, 74],
+                        },
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        html = doc.to_html()
+
+        self.assertEqual(doc.paragraphs[0].text, "First line Second line")
+        self.assertEqual([run.text for run in doc.paragraphs[0].runs], ["First line", " Second line"])
+        self.assertNotIn("<br>Second line", html)
+
+    def test_build_doc_ir_from_odl_result_expands_explicit_wide_space_spans(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "paragraph",
+                    "content": "금 원정(\\ )",
+                    "page number": 1,
+                    "font": "Base Font",
+                    "font size": 12,
+                    "spans": [
+                        {
+                            "type": "text chunk",
+                            "content": "금",
+                            "page number": 1,
+                            "bounding box": [10, 80, 20, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": " ",
+                            "page number": 1,
+                            "bounding box": [20, 80, 80, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": "원정(\\",
+                            "page number": 1,
+                            "bounding box": [80, 80, 112, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": " ",
+                            "page number": 1,
+                            "bounding box": [112, 80, 172, 92],
+                        },
+                        {
+                            "type": "text chunk",
+                            "content": ")",
+                            "page number": 1,
+                            "bounding box": [172, 80, 176, 92],
+                        },
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        html = doc.to_html()
+
+        self.assertEqual(doc.paragraphs[0].text, "금          원정(\\          )")
+        self.assertEqual([run.text for run in doc.paragraphs[0].runs], ["금", "          ", "원정(\\", "          ", ")"])
+        self.assertNotIn("text-decoration:underline", html)
+        self.assertIn("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;", html)
+
     def test_parse_pdf_to_doc_ir_uses_probe_for_page_sizes_and_filters_scan_pages(self) -> None:
         profile = PdfProfile(
             page_count=3,
@@ -650,6 +857,80 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertIsNone(doc.meta)
         self.assertFalse(hasattr(doc, "get_pdf_preview_context"))
 
+    def test_parse_pdf_to_doc_ir_maps_simple_public_config_to_odl_options(self) -> None:
+        profile = PdfProfile(
+            page_count=3,
+            avg_chars_per_page=30.0,
+            normal_text_ratio=0.8,
+            text_readable=True,
+            text_readable_page_ratio=1.0,
+            page_profiles=[
+                PageProfile(
+                    page_number=1,
+                    char_count=30,
+                    normal_text_ratio=0.8,
+                    replacement_char_ratio=0.0,
+                    text_readable=True,
+                    image_area_ratio=0.1,
+                    image_area_in_content_ratio=0.1,
+                    page_width_pt=612.0,
+                    page_height_pt=792.0,
+                ),
+                PageProfile(
+                    page_number=2,
+                    char_count=40,
+                    normal_text_ratio=0.8,
+                    replacement_char_ratio=0.0,
+                    text_readable=True,
+                    image_area_ratio=0.1,
+                    image_area_in_content_ratio=0.1,
+                    page_width_pt=612.0,
+                    page_height_pt=792.0,
+                ),
+                PageProfile(
+                    page_number=3,
+                    char_count=35,
+                    normal_text_ratio=0.7,
+                    replacement_char_ratio=0.0,
+                    text_readable=True,
+                    image_area_ratio=0.1,
+                    image_area_in_content_ratio=0.1,
+                    page_width_pt=612.0,
+                    page_height_pt=792.0,
+                ),
+            ],
+        )
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 3,
+            "kids": [{"type": "paragraph", "content": "Structured page 2", "page number": 2}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
+
+            with patch("document_processor.pdf.pipeline.probe_pdf", return_value=profile):
+                with patch("document_processor.pdf.pipeline.run_odl_json", return_value=raw_document) as run_odl, patch(
+                    "document_processor.pdf.pipeline.build_pdf_preview_context"
+                ) as build_preview_context:
+                    build_preview_context.return_value = PdfPreviewContext()
+                    parse_pdf_to_doc_ir(
+                        pdf_path,
+                        config={
+                            "pages": "2-3",
+                            "include_header_footer": True,
+                            "image_quality": "max",
+                            "image_output": "off",
+                        },
+                    )
+
+        odl_config = run_odl.call_args.args[1]
+        self.assertEqual(odl_config["pages"], [2, 3])
+        self.assertEqual(odl_config["include_header_footer"], True)
+        self.assertEqual(odl_config["image_quality"], "max")
+        self.assertEqual(odl_config["image_output"], "off")
+
     def test_resolve_odl_jar_path_uses_vendored_jar(self) -> None:
         jar_path = resolve_odl_jar_path()
 
@@ -679,7 +960,7 @@ class PdfPipelineTests(unittest.TestCase):
                     pdf_path,
                     output_dir=output_dir,
                     formats=["json", "html", "markdown"],
-                    config={"pages": [2, 3], "use_struct_tree": True},
+                    config={"pages": [2, 3]},
                 )
 
         run_cli.assert_called_once()
@@ -687,14 +968,15 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(outputs["html"].name, "sample.html")
         self.assertEqual(outputs["markdown"].name, "sample.md")
 
-    def test_convert_pdf_local_passes_preserve_whitespace_flag_when_enabled(self) -> None:
+    def test_convert_pdf_local_passes_simple_image_quality_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             pdf_path = Path(tmp_dir) / "sample.pdf"
             pdf_path.write_bytes(b"%PDF-1.7\n%fake")
             output_dir = Path(tmp_dir) / "out"
 
             def fake_run(command, **kwargs):
-                self.assertIn("--preserve-whitespace", command)
+                self.assertIn("--image-pixel-size", command)
+                self.assertEqual(command[command.index("--image-pixel-size") + 1], "2400")
                 output_dir.mkdir(parents=True, exist_ok=True)
                 (output_dir / "sample.json").write_text('{"ok": true}', encoding="utf-8")
                 return None
@@ -704,7 +986,7 @@ class PdfPipelineTests(unittest.TestCase):
                     pdf_path,
                     output_dir=output_dir,
                     formats=["json"],
-                    config={"preserve_whitespace": True},
+                    config={"image_quality": "high"},
                 )
 
         self.assertEqual(outputs["json"].name, "sample.json")

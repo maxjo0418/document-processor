@@ -1,156 +1,49 @@
 # document-processor PDF
 
-PDF parser for `document-processor`.
+PDF parsing uses the same public `DocIR` API as DOCX/HWP/HWPX.
+
+Start by parsing the PDF into a `DocIR`. Semantic output and HTML rendering are
+meaningful after this parsing/enrichment step has produced the document IR.
 
 ```python
 from document_processor import DocIR
 
 doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
-```
 
-`DocIR.from_file` accepts PDF paths, bytes, and binary file objects. The lower
-level `parse_pdf_to_doc_ir` helper accepts filesystem paths.
-
-The PDF package focuses on:
-
-- canonical PDF -> `DocIR` conversion
-- shared `DocIR.to_html()` rendering
-- OpenDataLoader local output export
-- table/style fidelity improvements on top of shared `DocIR`
-
-PDF native write-back is not supported by `apply_document_edits`; use the
-parsed `DocIR` for inspection, HTML rendering, downstream processing, or
-in-memory edits.
-
-
-## Canonical PDF Parsing
-
-Build a canonical `DocIR` from a PDF:
-
-```python
-from document_processor import DocIR
-
-doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
-```
-
-This is the structured path used for:
-
-- chunking
-- RAG
-- downstream structured processing
-
-The canonical path keeps `DocIR` flat and format-agnostic.
-
-
-## Exporting HTML
-
-Render a parsed PDF to styled HTML:
-
-```python
-from document_processor import DocIR
-
-doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
+semantic = doc.to_semantic().model_dump(mode="json", exclude_none=True)
 html = doc.to_html(title="PDF Preview")
 ```
 
-PDF-specific extraction evidence is consumed during parsing/enrichment and written
-back into `DocIR`. `DocIR.to_html()` then uses the same shared HTML renderer as
-other document types.
-
-
-## PDF Local Outputs
-
-Expose native OpenDataLoader outputs side-by-side when needed:
+Optional PDF config is intentionally small:
 
 ```python
-from document_processor.pdf import export_pdf_local_outputs
-
-outputs = export_pdf_local_outputs(
-    "/path/to/file.pdf",
-    output_dir="./out/pdf-native",
-)
-
-raw_json = outputs.read_json()
-native_html = outputs.read_text("html")
-native_markdown = outputs.read_text("markdown")
-```
-
-This is useful when:
-
-- you want the raw ODL JSON directly
-- you want native ODL HTML/Markdown for comparison
-- you are debugging the adapter or preview path
-
-
-## PDF Notes
-
-PDF uses a dedicated parse/enrich pipeline:
-
-- `probe -> triage -> ODL -> dotted-rule preprocessing -> adapter -> preview context -> DocIR enrichment`
-
-HTML rendering stays on the shared path:
-
-- `DocIR -> shared html exporter`
-
-The adapter preserves and normalizes:
-
-- paragraph text
-- `spans[]` -> `RunIR[]`
-- table/cell/span structure
-- run style fields such as font family, size, color, underline, strikethrough
-- first-class DocIR page numbers and bounding boxes copied from ODL geometry
-
-The enrichment path additionally uses raw ODL/pdfium-derived hints such as:
-
-- `layout regions[]`
-- `grid row boundaries`
-- `grid column boundaries`
-- visual block candidates
-
-The core `DocIR` model stays shared. PDF-specific intermediate state is consumed
-before rendering and projected into common DocIR/style fields where possible.
-
-
-## Preview Fidelity Options
-
-For visual preview experiments, you can opt into a more permissive ODL profile:
-
-```python
-from document_processor import DocIR
-
 doc = DocIR.from_file(
     "/path/to/file.pdf",
     doc_type="pdf",
     config={
-        "odl": {
-            "keep_line_breaks": True,
-            "preserve_whitespace": True,
-        }
+        "pages": "1,3,5-7",
+        "include_header_footer": False,
+        "image_quality": "high",  # standard, high, max
+        "image_output": "embedded",  # embedded, external, off
     },
 )
-html = doc.to_html(title="Preview Fidelity")
 ```
 
-Recommended split:
+## Semantic Output
 
-- default `DocIR.from_file(..., doc_type="pdf")`
-  - canonical parsing plus PDF layout/style enrichment
-- `DocIR.to_html()`
-  - shared HTML rendering path
-- `keep_line_breaks`, `preserve_whitespace`
-  - preview-fidelity options only
+Use semantic output from the parsed `DocIR` for chunking, RAG, and downstream
+processing.
 
-`preserve_whitespace` is best-effort. Some PDFs lose spacing before ODL normalization,
-so this does not guarantee that double spaces will appear in raw JSON.
-
-
-## Custom ODL JAR
-
-You can point the PDF path at a custom OpenDataLoader CLI JAR:
-
-```bash
-export DOCUMENT_PROCESSOR_ODL_JAR=/abs/path/opendataloader-pdf-cli.jar
+```python
+semantic = doc.to_semantic()
+semantic_dict = semantic.model_dump(mode="json", exclude_none=True)
+semantic_json = semantic.model_dump_json(exclude_none=True, indent=2)
 ```
 
-This is useful when testing a local `opendataloader-pdf` fork without replacing
-the vendored JAR.
+## HTML Preview
+
+Use HTML output from the parsed `DocIR` for preview rendering.
+
+```python
+html = doc.to_html(title="PDF Preview")
+```

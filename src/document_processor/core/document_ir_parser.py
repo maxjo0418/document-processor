@@ -1246,7 +1246,7 @@ def build_doc_ir_from_file(
 ) -> DocIR:
     """Build document IR directly from a document source."""
     if doc_type == "pdf":
-        from ..pdf import parse_pdf_to_doc_ir
+        from ..pdf.pipeline import parse_pdf_to_doc_ir
 
         if not isinstance(source, (str, Path)):
             raise TypeError("PDF parsing currently requires a filesystem path.")

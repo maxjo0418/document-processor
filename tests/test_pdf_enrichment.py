@@ -12,37 +12,17 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor import DocIR, PageInfo, ParagraphIR, TableCellIR, TableIR
+import document_processor.pdf.enhancement as pdf_enhancement
 from document_processor.pdf.enhancement import (
     RenderedPdfColorPage,
-    RenderedPdfPage,
     enrich_pdf_table_backgrounds,
-    enrich_pdf_table_borders,
     infer_cell_background_from_rendered_page,
-    infer_cell_borders_from_rendered_page,
 )
 from document_processor.pdf.meta import PdfBoundingBox
 from document_processor.pdf.preview import enrich_pdf_doc_ir
 from document_processor.pdf.preview.models import PdfPreviewContext
-from document_processor.style_types import CellStyleInfo, TableStyleInfo
+from document_processor.style_types import TableStyleInfo
 from document_processor.pdf.odl.adapter import _pdf_node_kwargs
-
-
-def _make_test_page(*, width: int = 40, height: int = 40) -> RenderedPdfPage:
-    pixels = bytearray([255] * (width * height))
-
-    for x in range(10, 30):
-        pixels[(10 * width) + x] = 0
-        pixels[(29 * width) + x] = 0
-    for y in range(10, 30):
-        pixels[(y * width) + 10] = 0
-        pixels[(y * width) + 29] = 0
-
-    return RenderedPdfPage(
-        width_px=width,
-        height_px=height,
-        stride=width,
-        pixels=bytes(pixels),
-    )
 
 
 def _make_test_color_page(*, width: int = 40, height: int = 40) -> RenderedPdfColorPage:
@@ -71,124 +51,11 @@ def _make_test_color_page(*, width: int = 40, height: int = 40) -> RenderedPdfCo
 
 
 class PdfEnrichmentTests(unittest.TestCase):
-    def test_infer_cell_borders_from_rendered_page_detects_rectangle_edges(self) -> None:
-        rendered_page = _make_test_page()
-
-        inferred = infer_cell_borders_from_rendered_page(
-            rendered_page,
-            bbox=PdfBoundingBox(left_pt=10.0, bottom_pt=10.0, right_pt=30.0, top_pt=30.0),
-            page_height_pt=40.0,
-            dpi=72,
-        )
-
-        self.assertEqual(inferred["top"], "1px solid #000000")
-        self.assertEqual(inferred["bottom"], "1px solid #000000")
-        self.assertEqual(inferred["left"], "1px solid #000000")
-        self.assertEqual(inferred["right"], "1px solid #000000")
-
-    def test_enrich_pdf_table_borders_applies_inferred_borders(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            pdf_path = Path(tmp_dir) / "example.pdf"
-            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
-
-            doc = DocIR(
-                source_doc_type="pdf",
-                source_path=str(pdf_path),
-                pages=[PageInfo(page_number=1, width_pt=40.0, height_pt=40.0)],
-                paragraphs=[
-                    ParagraphIR(
-                        **_pdf_node_kwargs("paragraph", "p1"),
-                        page_number=1,
-                        content=[
-                            TableIR(
-                                **_pdf_node_kwargs("table", "p1.tbl1"),
-                                table_style=TableStyleInfo(render_grid=True),
-                                cells=[
-                                    TableCellIR(
-                                        **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
-                                        row_index=1,
-                                        col_index=1,
-                                        bbox=PdfBoundingBox(
-                                            left_pt=10.0,
-                                            bottom_pt=10.0,
-                                            right_pt=30.0,
-                                            top_pt=30.0,
-                                        ),
-                                    )
-                                ],
-                            )
-                        ],
-                    )
-                ],
-            )
-
-            with patch(
-                "document_processor.pdf.enhancement.enrichment.render_pdf_pages_to_grayscale",
-                return_value={1: _make_test_page()},
-            ):
-                enrich_pdf_table_borders(doc, pdf_path=pdf_path, dpi=72)
-
-        cell_style = doc.paragraphs[0].tables[0].cells[0].cell_style
-        self.assertIsNotNone(cell_style)
-        self.assertEqual(cell_style.border_top, "1px solid #000000")
-        self.assertEqual(cell_style.border_bottom, "1px solid #000000")
-        self.assertEqual(cell_style.border_left, "1px solid #000000")
-        self.assertEqual(cell_style.border_right, "1px solid #000000")
-
-    def test_enrich_pdf_table_borders_refines_coarse_parser_borders(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            pdf_path = Path(tmp_dir) / "example.pdf"
-            pdf_path.write_bytes(b"%PDF-1.7\n%fake")
-
-            doc = DocIR(
-                source_doc_type="pdf",
-                source_path=str(pdf_path),
-                pages=[PageInfo(page_number=1, width_pt=40.0, height_pt=40.0)],
-                paragraphs=[
-                    ParagraphIR(
-                        **_pdf_node_kwargs("paragraph", "p1"),
-                        page_number=1,
-                        content=[
-                            TableIR(
-                                **_pdf_node_kwargs("table", "p1.tbl1"),
-                                table_style=TableStyleInfo(render_grid=True),
-                                cells=[
-                                    TableCellIR(
-                                        **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
-                                        row_index=1,
-                                        col_index=1,
-                                        cell_style=CellStyleInfo(
-                                            border_top="1px solid",
-                                            border_bottom="1px solid",
-                                            border_left="1px solid",
-                                            border_right="1px solid",
-                                        ),
-                                        bbox=PdfBoundingBox(
-                                            left_pt=10.0,
-                                            bottom_pt=10.0,
-                                            right_pt=30.0,
-                                            top_pt=30.0,
-                                        ),
-                                    )
-                                ],
-                            )
-                        ],
-                    )
-                ],
-            )
-
-            with patch(
-                "document_processor.pdf.enhancement.enrichment.render_pdf_pages_to_grayscale",
-                return_value={1: _make_test_page()},
-            ):
-                enrich_pdf_table_borders(doc, pdf_path=pdf_path, dpi=72)
-
-        cell_style = doc.paragraphs[0].tables[0].cells[0].cell_style
-        self.assertIsNotNone(cell_style)
-        self.assertEqual(cell_style.border_top, "1px solid #000000")
-        self.assertEqual(cell_style.border_bottom, "1px solid #000000")
-        self.assertEqual(cell_style.border_left, "1px solid #000000")
-        self.assertEqual(cell_style.border_right, "1px solid #000000")
+    def test_pdf_enhancement_does_not_export_table_border_enrichment(self) -> None:
+        self.assertFalse(hasattr(pdf_enhancement, "enrich_pdf_table_borders"))
+        self.assertFalse(hasattr(pdf_enhancement, "RenderedPdfPage"))
+        self.assertFalse(hasattr(pdf_enhancement, "infer_cell_borders_from_rendered_page"))
+        self.assertFalse(hasattr(pdf_enhancement, "render_pdf_pages_to_grayscale"))
 
     def test_infer_cell_background_from_rendered_page_detects_fill_color(self) -> None:
         rendered_page = _make_test_color_page()
@@ -248,15 +115,12 @@ class PdfEnrichmentTests(unittest.TestCase):
         self.assertIsNotNone(cell_style)
         self.assertEqual(cell_style.background, "#dfe6f7")
 
-    def test_enrich_pdf_doc_ir_enriches_pdf_tables_by_default(self) -> None:
+    def test_enrich_pdf_doc_ir_enriches_pdf_table_backgrounds_by_default(self) -> None:
         doc = DocIR(source_doc_type="pdf", source_path="/tmp/example.pdf")
 
-        with patch("document_processor.pdf.preview.normalize.enrich_pdf_table_borders") as enrich_borders, patch(
-            "document_processor.pdf.preview.normalize.enrich_pdf_table_backgrounds"
-        ) as enrich_backgrounds:
+        with patch("document_processor.pdf.preview.normalize.enrich_pdf_table_backgrounds") as enrich_backgrounds:
             enrich_pdf_doc_ir(doc)
 
-        enrich_borders.assert_called_once_with(doc)
         enrich_backgrounds.assert_called_once_with(doc)
 
     def test_docir_to_html_routes_pdf_through_common_renderer(self) -> None:

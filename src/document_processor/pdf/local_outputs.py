@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Iterable
 
 from ..io_utils import TemporarySourcePath, get_source_name
-from .config import OdlPdfConfig
+from .config import PdfParseConfig
 from .odl import convert_pdf_local
 
 PdfLocalFormat = str
@@ -59,13 +59,13 @@ def export_pdf_local_outputs(
     *,
     output_dir: str | Path,
     formats: Iterable[PdfLocalFormat] = DEFAULT_LOCAL_FORMATS,
-    config: OdlPdfConfig | dict[str, Any] | None = None,
+    config: PdfParseConfig | dict[str, Any] | None = None,
 ) -> PdfLocalOutputs:
     """Export local ODL artifacts to a directory and return typed handles."""
     resolved_config = (
         config
-        if isinstance(config, OdlPdfConfig)
-        else OdlPdfConfig.model_validate(config or {})
+        if isinstance(config, PdfParseConfig)
+        else PdfParseConfig.model_validate(config or {})
     )
     resolved_output_dir = Path(output_dir)
     resolved_output_dir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +75,7 @@ def export_pdf_local_outputs(
             source_path,
             output_dir=resolved_output_dir,
             formats=list(formats),
-            config=resolved_config.model_dump(exclude_none=True),
+            config=resolved_config.to_odl_config(for_doc_ir=False),
         )
 
     return PdfLocalOutputs(

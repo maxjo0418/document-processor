@@ -69,7 +69,7 @@ class StyleExtractorTests(unittest.TestCase):
             ],
         )
 
-        with patch("document_processor.pdf.parse_pdf_to_doc_ir", return_value=doc):
+        with patch("document_processor.pdf.pipeline.parse_pdf_to_doc_ir", return_value=doc):
             style_map = extract_styles("sample.pdf", doc_type="pdf")
 
         self.assertEqual(style_map.paragraphs["s1.p1"].align, "center")

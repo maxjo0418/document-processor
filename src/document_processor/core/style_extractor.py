@@ -1912,7 +1912,7 @@ def _collect_style_map_from_doc_ir(doc_ir) -> StyleMap:
 
 
 def extract_styles_pdf(source: str | Path | bytes) -> StyleMap:
-    from ..pdf import parse_pdf_to_doc_ir
+    from ..pdf.pipeline import parse_pdf_to_doc_ir
 
     if isinstance(source, (str, Path)):
         doc_ir = parse_pdf_to_doc_ir(source)
