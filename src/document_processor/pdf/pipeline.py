@@ -7,6 +7,7 @@ from typing import Any
 
 from ..models import DocIR, PageInfo
 from .config import PdfParseConfig
+from .enhancement.image_fallback import replace_low_resolution_pdf_image_assets
 from .odl import build_doc_ir_from_odl_result, preprocess_dotted_rule_splits, run_odl_json
 from .parsing import PageClass, PdfProfile, decide_page, probe_pdf
 from .preview.context import build_pdf_preview_context, collect_pdfium_visual_block_candidates
@@ -101,6 +102,7 @@ def _parse_pdf_to_doc_ir_with_preview(
         )
 
     _apply_probe_page_sizes(doc_ir, profile=profile, selected_pages=selected_pages)
+    replace_low_resolution_pdf_image_assets(doc_ir, source_path)
     return doc_ir, preview_context
 
 

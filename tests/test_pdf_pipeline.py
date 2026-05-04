@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 from io import BytesIO
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -12,7 +14,17 @@ SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from document_processor import DocIR, ParaStyleInfo, ParagraphIR, RunIR
+from document_processor import (
+    BoundingBox,
+    DocIR,
+    ImageAsset,
+    ImageIR,
+    PageInfo,
+    ParaStyleInfo,
+    ParagraphIR,
+    RunIR,
+)
+from document_processor.pdf.enhancement.image_fallback import replace_low_resolution_pdf_image_assets
 from document_processor.pdf.config import PdfParseConfig
 from document_processor.pdf.local_outputs import export_pdf_local_outputs
 from document_processor.pdf.odl import (
@@ -41,6 +53,77 @@ class PdfPipelineTests(unittest.TestCase):
     def test_pdf_parse_config_rejects_odl_internal_options(self) -> None:
         with self.assertRaises(ValueError):
             PdfParseConfig.model_validate({"table_method": "default"})
+
+    def test_low_resolution_pdf_image_fallback_replaces_asset_with_bbox_crop(self) -> None:
+        class FakeBitmap:
+            width = 30
+            height = 30
+            stride = 90
+            mode = "BGR"
+            n_channels = 3
+            buffer = bytes([0, 0, 255]) * (width * height)
+
+            def close(self) -> None:
+                return None
+
+        class FakePage:
+            def render(self, *, scale: float, grayscale: bool) -> FakeBitmap:
+                self.scale = scale
+                self.grayscale = grayscale
+                return FakeBitmap()
+
+        class FakePdfDocument:
+            def __init__(self, path: str) -> None:
+                self.path = path
+                self.page = FakePage()
+
+            def __getitem__(self, index: int) -> FakePage:
+                self.index = index
+                return self.page
+
+            def close(self) -> None:
+                return None
+
+        doc = DocIR(
+            source_doc_type="pdf",
+            pages=[PageInfo(page_number=1, width_pt=10.0, height_pt=10.0)],
+            assets={
+                "img1": ImageAsset(
+                    mime_type="image/png",
+                    data_base64=base64.b64encode(b"old").decode("ascii"),
+                    intrinsic_width_px=5,
+                    intrinsic_height_px=5,
+                )
+            },
+            paragraphs=[
+                ParagraphIR(
+                    page_number=1,
+                    content=[
+                        ImageIR(
+                            image_id="img1",
+                            bbox=BoundingBox(left_pt=0, bottom_pt=0, right_pt=10, top_pt=10),
+                            display_width_pt=10.0,
+                            display_height_pt=10.0,
+                        )
+                    ],
+                )
+            ],
+        )
+
+        with patch.dict(
+            sys.modules,
+            {"pypdfium2": SimpleNamespace(PdfDocument=lambda path: FakePdfDocument(path))},
+        ):
+            replace_low_resolution_pdf_image_assets(doc, "sample.pdf", threshold_px_per_pt=1.1, dpi=216)
+
+        asset = doc.assets["img1"]
+        data = asset.bytes_data()
+        self.assertEqual(asset.mime_type, "image/png")
+        self.assertEqual(asset.intrinsic_width_px, 30)
+        self.assertEqual(asset.intrinsic_height_px, 30)
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(int.from_bytes(data[16:20], "big"), 30)
+        self.assertEqual(int.from_bytes(data[20:24], "big"), 30)
 
     def test_build_doc_ir_from_odl_result_prefers_explicit_table_cell_border_css(self) -> None:
         raw_document = {
@@ -420,6 +503,8 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.paragraphs[4].native_anchor.debug_path, "s1.p5")
         self.assertEqual(doc.paragraphs[4].images[0].native_anchor.debug_path, "s1.p5.img1")
         self.assertEqual(doc.paragraphs[4].images[0].image_id, "odl-img-p5")
+        self.assertEqual(doc.paragraphs[4].images[0].display_width_pt, 120.0)
+        self.assertEqual(doc.paragraphs[4].images[0].display_height_pt, 40.0)
         self.assertEqual(doc.paragraphs[4].bbox.left_pt, 300.0)
         self.assertEqual(doc.paragraphs[4].images[0].bbox.left_pt, 300.0)
         self.assertFalse(hasattr(doc.paragraphs[4].images[0], "meta"))

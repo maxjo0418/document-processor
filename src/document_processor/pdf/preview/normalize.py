@@ -1199,6 +1199,9 @@ def _layout_row_paragraph(
         gap_pt = None
         if bbox is not None and next_bbox is not None:
             gap_pt = max(next_bbox.left_pt - bbox.right_pt, 0.0)
+        width_pt = _bbox_width(bbox)
+        if width_pt is not None and gap_pt is not None:
+            width_pt += gap_pt
 
         cell_paragraph = paragraph.model_copy(deep=True)
         _set_paragraph_column_layout(cell_paragraph, None)
@@ -1209,7 +1212,7 @@ def _layout_row_paragraph(
             col_index=index,
             bbox=bbox,
             cell_style=CellStyleInfo(
-                width_pt=_bbox_width(bbox),
+                width_pt=width_pt,
                 height_pt=_bbox_height(bbox),
                 vertical_align="top",
                 padding_right_pt=gap_pt,

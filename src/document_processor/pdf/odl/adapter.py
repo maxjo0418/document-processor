@@ -181,6 +181,14 @@ def _display_size_from_node(node: dict[str, Any]) -> tuple[float | None, float |
     )
 
 
+def _display_size_from_bbox(bbox: PdfBoundingBox | None) -> tuple[float | None, float | None]:
+    if bbox is None:
+        return None, None
+    width_pt = max(bbox.right_pt - bbox.left_pt, 0.0)
+    height_pt = max(bbox.top_pt - bbox.bottom_pt, 0.0)
+    return width_pt, height_pt
+
+
 def _page_number_from_node(node: dict[str, Any]) -> int | None:
     return coerce_int(node.get("page number"))
 
@@ -659,6 +667,10 @@ def _image_paragraph(
     _append_image_asset(assets, node=node, unit_id=unit_id)
     display_width_pt, display_height_pt = _display_size_from_node(node)
     image_geometry = _node_geometry(node)
+    if display_width_pt is None and display_height_pt is None:
+        display_width_pt, display_height_pt = _display_size_from_bbox(
+            image_geometry.bounding_box if image_geometry is not None else None
+        )
     return ParagraphIR(
         **_pdf_node_kwargs("paragraph", unit_id),
         text="",

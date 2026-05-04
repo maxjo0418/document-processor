@@ -339,6 +339,47 @@ class PdfPreviewTests(unittest.TestCase):
         self.assertEqual(len(layout_rows), 1)
         self.assertEqual([cell.text for cell in layout_rows[0].cells], ["요건검토", "ð", "서류평가"])
 
+    def test_enrich_pdf_doc_ir_layout_row_cell_width_includes_gap_padding(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "pages": [{"page number": 1, "width pt": 200, "height pt": 200}],
+            "kids": [
+                {
+                    "type": "image",
+                    "page number": 1,
+                    "bounding box": [10, 70, 60, 150],
+                    "data": "data:image/png;base64,AAAA",
+                    "width px": 50,
+                    "height px": 80,
+                },
+                {
+                    "type": "image",
+                    "page number": 1,
+                    "bounding box": [72, 70, 122, 150],
+                    "data": "data:image/png;base64,AAAA",
+                    "width px": 50,
+                    "height px": 80,
+                },
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        context = build_pdf_preview_context(raw_document)
+
+        enrich_pdf_doc_ir(doc, preview_context=context)
+
+        layout_row = doc.paragraphs[0].tables[0]
+        first_cell_style = layout_row.cells[0].cell_style
+        second_cell_style = layout_row.cells[1].cell_style
+
+        self.assertIsNotNone(first_cell_style)
+        self.assertIsNotNone(second_cell_style)
+        self.assertAlmostEqual(first_cell_style.width_pt or 0.0, 62.0)
+        self.assertAlmostEqual(first_cell_style.padding_right_pt or 0.0, 12.0)
+        self.assertAlmostEqual(second_cell_style.width_pt or 0.0, 50.0)
+        self.assertIsNone(second_cell_style.padding_right_pt)
+
     def test_pdf_layout_row_arrow_connector_whitelist_includes_directional_arrows(self) -> None:
         connectors = ("->", "<-", "→", "←", "↑", "↓", "↔", "↕", "➡", "⬅", "⬆", "⬇", "⇧", "⇩", "ð", "ï")
         for connector in connectors:
