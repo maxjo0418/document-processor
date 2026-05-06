@@ -60,8 +60,6 @@ def _new_table(path: str, *, table_style=None) -> TableIR:
 def _new_cell(path: str, *, row_index: int, col_index: int, cell_style=None) -> TableCellIR:
     return TableCellIR(
         node_id=_anchored_node_id("cell", path),
-        row_index=row_index,
-        col_index=col_index,
         cell_style=cell_style,
         native_anchor=_make_native_anchor("cell", path),
     )
@@ -140,7 +138,7 @@ def _get_or_create_cell(
     cell_style = style_map.cells.get(cell_id) if style_map else None
     cell = _new_cell(cell_id, row_index=row_index, col_index=col_index, cell_style=cell_style)
     cell_map[cell_bucket_key] = cell
-    table.cells.append(cell)
+    table.append_cell(cell, row_index=row_index, col_index=col_index)
     return cell
 
 
@@ -298,13 +296,11 @@ def _ingest_paragraph_like_tokens(
 def _finalize_table(
     table: TableIR,
 ) -> None:
-    table.cells.sort(key=lambda cell: (cell.row_index, cell.col_index))
-
     max_row = 0
     max_col = 0
-    for cell in table.cells:
-        max_row = max(max_row, cell.row_index)
-        max_col = max(max_col, cell.col_index)
+    for row_index, col_index, cell in table.iter_cell_positions():
+        max_row = max(max_row, row_index)
+        max_col = max(max_col, col_index)
 
         cell.paragraphs.sort(key=lambda cp: _structural_path_sort_key(_node_anchor_path(cp)))
         for cell_paragraph in cell.paragraphs:
@@ -345,7 +341,7 @@ def apply_style_map_to_doc_ir(doc_ir: "DocIR", style_map: "StyleMap | None") -> 
             if table.col_count <= 0:
                 table.col_count = table_style.col_count
 
-        for cell in table.cells:
+        for cell in table.iter_cells():
             cell_path = _node_anchor_path(cell)
             if cell_path in style_map.cells:
                 cell.cell_style = style_map.cells[cell_path]

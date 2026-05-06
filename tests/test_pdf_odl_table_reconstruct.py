@@ -615,7 +615,7 @@ class DottedRuleSplitAdapterIntegrationTests(unittest.TestCase):
         table_ir = odl_adapter._table_node_to_ir(table, unit_id="u", assets={})
         self.assertEqual(table_ir.row_count, 2)
         self.assertEqual(table_ir.col_count, 1)
-        cells_by_row = {cell.row_index: cell for cell in table_ir.cells}
+        cells_by_row = {row_index: cell for row_index, _col_index, cell in table_ir.iter_cell_positions()}
         self.assertEqual(cells_by_row[1].text.strip(), "Top")
         self.assertEqual(cells_by_row[2].text.strip(), "Bottom")
 

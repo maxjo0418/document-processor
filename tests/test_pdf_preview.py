@@ -337,7 +337,7 @@ class PdfPreviewTests(unittest.TestCase):
             and paragraph.tables[0].col_count >= 2
         ]
         self.assertEqual(len(layout_rows), 1)
-        self.assertEqual([cell.text for cell in layout_rows[0].cells], ["요건검토", "ð", "서류평가"])
+        self.assertEqual([cell.text for cell in layout_rows[0].cells[0]], ["요건검토", "ð", "서류평가"])
 
     def test_enrich_pdf_doc_ir_layout_row_cell_width_includes_gap_padding(self) -> None:
         raw_document = {
@@ -370,8 +370,8 @@ class PdfPreviewTests(unittest.TestCase):
         enrich_pdf_doc_ir(doc, preview_context=context)
 
         layout_row = doc.paragraphs[0].tables[0]
-        first_cell_style = layout_row.cells[0].cell_style
-        second_cell_style = layout_row.cells[1].cell_style
+        first_cell_style = layout_row.cells[0][0].cell_style
+        second_cell_style = layout_row.cells[0][1].cell_style
 
         self.assertIsNotNone(first_cell_style)
         self.assertIsNotNone(second_cell_style)

@@ -186,18 +186,38 @@ Important fields:
 - `row_count`
 - `col_count`
 - `table_style`
-- `cells`
+- `cells`: row-major logical grid `list[list[TableCellIR]]`; access cells by
+  row and column like `table.cells[0][0]`. Merged-cell covered coordinates
+  contain the same `TableCellIR` object as the merge origin.
 
 Computed helper:
 
 - `.markdown`
+
+Convenience helpers:
+
+- `.iter_cells()`: yields each real cell once in row-major order, skipping
+  duplicate merged-cell filler references
+- `.iter_cell_positions()`: yields `(row_index, column_index, cell)` for each
+  real cell's 1-based logical origin
+
+### `TableCellIR`
+
+Table cell node. Its row/column position is implied by `TableIR.cells`; use
+`TableIR.iter_cell_positions()` when logical coordinates are needed.
+
+Important fields:
+
+- `node_id`
+- `text`
+- `cell_style`
+- `paragraphs`
 
 ### Supporting Models
 
 - `ImageAsset`
 - `ImageIR`
 - `PageInfo`
-- `TableCellIR`
 - `NativeAnchor`
 - `CellStyleInfo`
 - `ColumnLayoutInfo`

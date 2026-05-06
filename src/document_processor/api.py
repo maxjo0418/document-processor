@@ -43,6 +43,12 @@ _WRITEBACK_SOURCE_TYPES = {"docx", "hwpx", "hwp"}
 _OUTPUT_FILENAME_SUFFIXES = {".docx", ".hwpx"}
 
 
+def _first_table_cell(table: TableIR) -> TableCellIR | None:
+    for cell in table.iter_cells():
+        return cell
+    return None
+
+
 @dataclass
 class _ResolvedDocument:
     doc: DocIR
@@ -149,11 +155,11 @@ def get_document_context(
         for cell in _iter_doc_ir_cells(resolved.doc.paragraphs)
         if cell.node_id is not None and cell.paragraphs and cell.paragraphs[0].node_id is not None
     }
-    table_to_anchor_paragraph = {
-        table.node_id: table.cells[0].paragraphs[0]
-        for table in _iter_doc_ir_tables(resolved.doc.paragraphs)
-        if table.node_id is not None and table.cells and table.cells[0].paragraphs
-    }
+    table_to_anchor_paragraph: dict[str, ParagraphIR] = {}
+    for table in _iter_doc_ir_tables(resolved.doc.paragraphs):
+        first_cell = _first_table_cell(table)
+        if table.node_id is not None and first_cell is not None and first_cell.paragraphs:
+            table_to_anchor_paragraph[table.node_id] = first_cell.paragraphs[0]
 
     selected_indices: set[int] = set()
     missing_target_ids: list[str] = []
@@ -197,7 +203,7 @@ def _iter_doc_ir_cells(paragraphs: list[ParagraphIR]):
 
 
 def _iter_doc_ir_table_cells(table: TableIR):
-    for cell in table.cells:
+    for cell in table.iter_cells():
         yield cell
         for paragraph in cell.paragraphs:
             for nested_table in paragraph.tables:
@@ -208,7 +214,7 @@ def _iter_doc_ir_tables(paragraphs: list[ParagraphIR]):
     for paragraph in paragraphs:
         for table in paragraph.tables:
             yield table
-            for cell in table.cells:
+            for cell in table.iter_cells():
                 yield from _iter_doc_ir_tables(cell.paragraphs)
 
 
@@ -510,7 +516,7 @@ def _build_target_identity_index(doc: DocIR) -> _TargetIdentityIndex:
             native_anchor=table.native_anchor,
         )
         _register_target_identity(by_identifier, identity)
-        for cell in table.cells:
+        for cell in table.iter_cells():
             register_cell(cell)
 
     def register_cell(cell: TableCellIR) -> None:
@@ -1446,10 +1452,10 @@ def _collect_editable_targets(
         for cell in _iter_doc_ir_cells(doc.paragraphs)
         for paragraph in cell.paragraphs
     }
-    cell_to_table = {
-        cell.node_id: table
+    cell_to_table_position = {
+        cell.node_id: (table, row_index, col_index)
         for table in _iter_doc_ir_tables(doc.paragraphs)
-        for cell in table.cells
+        for row_index, col_index, cell in table.iter_cell_positions()
     }
     emitted_cell_ids: set[str] = set()
     for paragraph in _iter_doc_ir_paragraphs(doc.paragraphs):
@@ -1457,7 +1463,10 @@ def _collect_editable_targets(
         if parent_cell is not None and parent_cell.node_id not in emitted_cell_ids:
             cell_requested = exact_target_ids is None or parent_cell.node_id in exact_target_ids
             cell_writable, cell_writable_reason = _cell_writable(parent_cell)
-            parent_table = cell_to_table.get(parent_cell.node_id)
+            parent_table_position = cell_to_table_position.get(parent_cell.node_id)
+            parent_table = parent_table_position[0] if parent_table_position is not None else None
+            row_index = parent_table_position[1] if parent_table_position is not None else None
+            column_index = parent_table_position[2] if parent_table_position is not None else None
             cell_style = parent_cell.cell_style
             if "cell" in target_kinds and cell_requested:
                 if not only_writable or cell_writable:
@@ -1467,8 +1476,8 @@ def _collect_editable_targets(
                             target_id=parent_cell.node_id,
                             parent_paragraph_id=paragraph.node_id,
                             parent_table_id=parent_table.node_id if parent_table is not None else None,
-                            row_index=parent_cell.row_index,
-                            column_index=parent_cell.col_index,
+                            row_index=row_index,
+                            column_index=column_index,
                             rowspan=max(cell_style.rowspan, 1) if cell_style is not None else 1,
                             colspan=max(cell_style.colspan, 1) if cell_style is not None else 1,
                             current_text=parent_cell.text,

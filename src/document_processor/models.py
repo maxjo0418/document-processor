@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from collections import OrderedDict
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar
 
@@ -258,7 +259,7 @@ class ParagraphIR(BaseModel, Generic[T]):
         if not include_table_runs:
             return
         for table in self.tables:
-            for cell in table.cells:
+            for cell in table.iter_cells():
                 for cell_paragraph in cell.paragraphs:
                     yield from cell_paragraph.iter_all_runs(include_table_runs=True)
 
@@ -267,7 +268,7 @@ class ParagraphIR(BaseModel, Generic[T]):
         if self.runs:
             parts.append("".join(run.text for run in self.runs))
         for table in self.tables:
-            cell_texts = [cell.text for cell in table.cells if cell.text]
+            cell_texts = [cell.text for cell in table.iter_cells() if cell.text]
             if cell_texts:
                 parts.append("\n".join(cell_texts))
 
@@ -281,8 +282,6 @@ class TableCellIR(BaseModel, Generic[T]):
     meta: T | None = None
 
     node_id: str | None = None
-    row_index: int
-    col_index: int
     text: str = ""
     bbox: BoundingBox | None = None
     cell_style: CellStyleInfo | None = None
@@ -310,16 +309,143 @@ class TableIR(BaseModel, Generic[T]):
     col_count: int = 0
     bbox: BoundingBox | None = None
     table_style: TableStyleInfo | None = None
-    cells: list[TableCellIR] = Field(default_factory=list)
+    cells: list[list[TableCellIR]] = Field(default_factory=list)
     native_anchor: NativeAnchor | None = None
 
     def model_post_init(self, __context: Any) -> None:
         if self.node_id is None and self.native_anchor is not None:
             self.node_id = _stable_node_id("table", _node_anchor_path(self))
+        self.expand_merged_cells()
+
+    def expand_merged_cells(self) -> None:
+        self.cells = _expanded_table_cells(
+            self.cells,
+            row_count=self.row_count,
+            col_count=self.col_count,
+        )
+
+    def iter_cells(self):
+        for _row_index, _col_index, cell in self.iter_cell_positions():
+            yield cell
+
+    def iter_cell_positions(self):
+        yield from _table_cell_origin_positions(self.cells)
+
+    def cell_position(self, target: TableCellIR) -> tuple[int, int] | None:
+        for row_index, col_index, cell in self.iter_cell_positions():
+            if cell is target:
+                return row_index, col_index
+        return None
+
+    def append_cell(self, cell: TableCellIR, *, row_index: int, col_index: int | None = None) -> None:
+        if row_index < 1:
+            raise ValueError("row_index must be 1-based.")
+        while len(self.cells) < row_index:
+            self.cells.append([])
+        row = self.cells[row_index - 1]
+        if col_index is None or col_index > len(row):
+            row.append(cell)
+        else:
+            row.insert(max(col_index - 1, 0), cell)
+        self.expand_merged_cells()
 
     @computed_field
     def markdown(self) -> str:
         return _render_table_markdown(self)
+
+
+def _cell_identity_key(cell: TableCellIR) -> tuple[str, object]:
+    if cell.node_id is not None:
+        return "node_id", cell.node_id
+    if cell.native_anchor is not None:
+        return "anchor", _node_anchor_path(cell)
+    return "object", id(cell)
+
+
+def _cell_filler_signature(cell: TableCellIR) -> str:
+    try:
+        return json.dumps(
+            cell.model_dump(mode="json", exclude={"meta": True}),
+            sort_keys=True,
+            ensure_ascii=False,
+            default=repr,
+        )
+    except Exception:
+        return repr(cell)
+
+
+def _cell_matches_filler(candidate: TableCellIR, origin: TableCellIR) -> bool:
+    candidate_key = _cell_identity_key(candidate)
+    origin_key = _cell_identity_key(origin)
+    if candidate_key[0] != "object" and candidate_key == origin_key:
+        return True
+    return _cell_filler_signature(candidate) == _cell_filler_signature(origin)
+
+
+def _table_cell_origin_positions(cells: list[list[TableCellIR]]):
+    occupied: dict[tuple[int, int], TableCellIR] = {}
+    seen: set[tuple[str, object]] = set()
+    for row_index, row in enumerate(cells, start=1):
+        col_index = 1
+        cell_index = 0
+        while cell_index < len(row):
+            cell = row[cell_index]
+            covering_cell = occupied.get((row_index, col_index))
+            if covering_cell is not None and _cell_matches_filler(cell, covering_cell):
+                col_index += 1
+                cell_index += 1
+                continue
+
+            while (row_index, col_index) in occupied:
+                col_index += 1
+
+            cell_key = _cell_identity_key(cell)
+            if cell_key in seen:
+                col_index += 1
+                cell_index += 1
+                continue
+
+            yield row_index, col_index, cell
+            seen.add(cell_key)
+
+            rowspan = _cell_rowspan(cell)
+            colspan = _cell_colspan(cell)
+            for covered_row in range(row_index, row_index + rowspan):
+                for covered_col in range(col_index, col_index + colspan):
+                    occupied[(covered_row, covered_col)] = cell
+
+            col_index += 1
+            cell_index += 1
+
+
+def _expanded_table_cells(
+    cells: list[list[TableCellIR]],
+    *,
+    row_count: int,
+    col_count: int,
+) -> list[list[TableCellIR]]:
+    origin_positions = list(_table_cell_origin_positions(cells))
+    if not origin_positions:
+        return cells
+
+    max_row = max(row_count, len(cells))
+    max_col = max(col_count, max((len(row) for row in cells), default=0))
+    for row_index, col_index, cell in origin_positions:
+        max_row = max(max_row, row_index + _cell_rowspan(cell) - 1)
+        max_col = max(max_col, col_index + _cell_colspan(cell) - 1)
+
+    grid: list[list[TableCellIR | None]] = [[None for _ in range(max_col)] for _ in range(max_row)]
+    for row_index, col_index, cell in origin_positions:
+        for fill_row in range(row_index - 1, row_index - 1 + _cell_rowspan(cell)):
+            for fill_col in range(col_index - 1, col_index - 1 + _cell_colspan(cell)):
+                grid[fill_row][fill_col] = cell
+
+    expanded: list[list[TableCellIR]] = []
+    for row in grid:
+        while row and row[-1] is None:
+            row.pop()
+        expanded.append([cell if cell is not None else TableCellIR() for cell in row])
+    return expanded
 
 
 def _source_log_label(source: object) -> str:
@@ -468,8 +594,8 @@ class DocIR(BaseModel, Generic[T]):
         def walk_table(table: TableIR, *, fallback_path: str, parent_debug_path: str | None) -> None:
             ensure(table, "table", fallback_path=fallback_path, parent_debug_path=parent_debug_path)
             table_path = _node_anchor_path(table)
-            for cell in table.cells:
-                cell_path = f"{table_path}.tr{cell.row_index}.tc{cell.col_index}"
+            for row_index, col_index, cell in table.iter_cell_positions():
+                cell_path = f"{table_path}.tr{row_index}.tc{col_index}"
                 ensure(cell, "cell", fallback_path=cell_path, parent_debug_path=table_path, text=cell.text)
                 resolved_cell_path = _node_anchor_path(cell)
                 for paragraph_index, paragraph in enumerate(cell.paragraphs, start=1):
@@ -686,7 +812,7 @@ def _image_semantic_text(image: ImageIR) -> str:
 
 
 def _table_page_number(table: TableIR, fallback: int | None) -> int | None:
-    for cell in table.cells:
+    for cell in table.iter_cells():
         for paragraph in cell.paragraphs:
             if paragraph.page_number is not None:
                 return paragraph.page_number
@@ -758,16 +884,17 @@ def _cell_markdown_text(
 
 
 def _table_grid(table: TableIR) -> tuple[list[list[TableCellIR | None]], int, int]:
-    if not table.cells:
+    positioned_cells = list(table.iter_cell_positions())
+    if not positioned_cells:
         return [], 0, 0
 
-    max_row = max(cell.row_index + _cell_rowspan(cell) - 1 for cell in table.cells)
-    max_col = max(cell.col_index + _cell_colspan(cell) - 1 for cell in table.cells)
+    max_row = max(row_index + _cell_rowspan(cell) - 1 for row_index, _col_index, cell in positioned_cells)
+    max_col = max(col_index + _cell_colspan(cell) - 1 for _row_index, col_index, cell in positioned_cells)
     grid: list[list[TableCellIR | None]] = [[None for _ in range(max_col)] for _ in range(max_row)]
 
-    for cell in sorted(table.cells, key=lambda c: (c.row_index, c.col_index, _node_debug_path(c))):
-        for row in range(cell.row_index - 1, cell.row_index - 1 + _cell_rowspan(cell)):
-            for col in range(cell.col_index - 1, cell.col_index - 1 + _cell_colspan(cell)):
+    for row_index, col_index, cell in sorted(positioned_cells, key=lambda item: (item[0], item[1], _node_debug_path(item[2]))):
+        for row in range(row_index - 1, row_index - 1 + _cell_rowspan(cell)):
+            for col in range(col_index - 1, col_index - 1 + _cell_colspan(cell)):
                 grid[row][col] = cell
 
     return grid, max_row, max_col

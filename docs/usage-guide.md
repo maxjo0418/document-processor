@@ -563,6 +563,12 @@ Cell targets returned by `list_editable_targets` include `parent_table_id`,
 the cell id for a row/column coordinate before applying cell `width_pt` or
 `height_pt`.
 
+In `DocIR`, table cells are row-major and two-dimensional:
+`table.cells[0][0]` is the first row's first cell. Merged-cell covered
+coordinates point to the same `TableCellIR` object as the merge origin, so a
+cell spanning columns 2-3 appears at both `table.cells[row][1]` and
+`table.cells[row][2]`.
+
 Floating placement write-back is native-format oriented. The edited DOCX/HWPX
 file receives placement XML, and the preview `updated_doc_ir` contains the
 requested placement object. Re-parsing native files and rendering HTML currently

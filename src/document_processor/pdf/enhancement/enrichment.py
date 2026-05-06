@@ -92,7 +92,7 @@ def _iter_table_candidates(
     page_number: int | None,
     page_heights: dict[int, float],
 ):
-    for cell in table.cells:
+    for cell in table.iter_cells():
         cell_bbox = getattr(cell, "bbox", None)
         page_height_pt = page_heights.get(page_number)
         if page_number is not None and cell_bbox is not None and page_height_pt is not None:

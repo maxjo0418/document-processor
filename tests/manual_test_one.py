@@ -74,7 +74,7 @@ def iter_paragraph_texts(paragraphs) -> Any:
 
 
 def iter_table_texts(table) -> Any:
-    for cell in table.cells:
+    for cell in table.iter_cells():
         yield cell.text
         for paragraph in cell.paragraphs:
             yield paragraph.text
@@ -401,7 +401,7 @@ def iter_paragraph_node_tree(paragraphs) -> Any:
     for paragraph in paragraphs:
         yield paragraph
         for table in paragraph.tables:
-            for cell in table.cells:
+            for cell in table.iter_cells():
                 yield from iter_paragraph_node_tree(cell.paragraphs)
 
 
@@ -413,14 +413,15 @@ def iter_doc_ir_images(doc: DocIR) -> Any:
 def iter_paragraph_tables(paragraph) -> Any:
     for table in paragraph.tables:
         yield table
-        for cell in table.cells:
+        for cell in table.iter_cells():
             for cell_paragraph in cell.paragraphs:
                 yield from iter_paragraph_tables(cell_paragraph)
 
 
 def table_shape(table) -> tuple[int, int]:
-    row_count = table.row_count or max((cell.row_index for cell in table.cells), default=0)
-    col_count = table.col_count or max((cell.col_index for cell in table.cells), default=0)
+    positions = list(table.iter_cell_positions())
+    row_count = table.row_count or max((row_index for row_index, _col_index, _cell in positions), default=0)
+    col_count = table.col_count or max((col_index for _row_index, col_index, _cell in positions), default=0)
     return row_count, col_count
 
 
@@ -428,7 +429,7 @@ def table_is_rectangular(table) -> bool:
     row_count, col_count = table_shape(table)
     if row_count <= 0 or col_count <= 0:
         return False
-    coordinates = {(cell.row_index, cell.col_index) for cell in table.cells}
+    coordinates = {(row_index, col_index) for row_index, col_index, _cell in table.iter_cell_positions()}
     return len(coordinates) == row_count * col_count and all(
         (row_index, col_index) in coordinates
         for row_index in range(1, row_count + 1)
@@ -438,7 +439,7 @@ def table_is_rectangular(table) -> bool:
 
 def find_doc_ir_cell_table(doc: DocIR, cell_id: str) -> tuple[Any, Any] | None:
     for table in iter_doc_ir_tables(doc):
-        for cell in table.cells:
+        for cell in table.iter_cells():
             if cell.node_id == cell_id:
                 return table, cell
     return None

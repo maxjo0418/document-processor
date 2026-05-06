@@ -398,7 +398,7 @@ class EditorApiTests(unittest.TestCase):
             source_doc_type="docx",
         )
         table = doc.paragraphs[0].tables[0]
-        target_cell = table.cells[0]
+        target_cell = table.cells[0][0]
 
         result = apply_document_edits(
             document=DocumentInput(doc_ir=doc),
@@ -416,7 +416,7 @@ class EditorApiTests(unittest.TestCase):
 
         self.assertTrue(result.ok, result.validation.issues)
         updated_table = result.updated_doc_ir.paragraphs[0].tables[0]
-        cells = {(cell.row_index, cell.col_index): cell for cell in updated_table.cells}
+        cells = {(row_index, col_index): cell for row_index, col_index, cell in updated_table.iter_cell_positions()}
 
         self.assertEqual(cells[(1, 1)].cell_style.background, "#FFF2CC")
         self.assertIsNone(cells[(1, 2)].cell_style.background)
@@ -476,7 +476,7 @@ class EditorApiTests(unittest.TestCase):
 
         source_bytes = self._build_sample_table_docx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="docx")
-        cell = doc.paragraphs[0].tables[0].cells[0]
+        cell = doc.paragraphs[0].tables[0].cells[0][0]
 
         result = apply_document_edits(
             document=DocumentInput(
@@ -496,7 +496,7 @@ class EditorApiTests(unittest.TestCase):
 
         self.assertTrue(result.ok, result.validation.issues)
         reparsed = DocIR.from_file(result.output_bytes, doc_type="docx")
-        updated_cell = reparsed.paragraphs[0].tables[0].cells[0]
+        updated_cell = reparsed.paragraphs[0].tables[0].cells[0][0]
         self.assertAlmostEqual(updated_cell.cell_style.width_pt, 144.0)
         self.assertAlmostEqual(updated_cell.cell_style.height_pt, 36.0)
         self.assertEqual(updated_cell.cell_style.background, "#FFF2CC")
@@ -518,7 +518,7 @@ class EditorApiTests(unittest.TestCase):
         doc = DocIR.from_file(source_bytes, doc_type="hwpx")
         paragraph = doc.paragraphs[0]
         run = paragraph.runs[0]
-        cell = paragraph.tables[0].cells[0]
+        cell = paragraph.tables[0].cells[0][0]
 
         result = apply_document_edits(
             document=DocumentInput(
@@ -592,7 +592,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(updated_paragraph.para_style.align, "center")
         self.assertAlmostEqual(updated_paragraph.para_style.left_indent_pt, 18.0)
 
-        updated_cell = reparsed.paragraphs[0].tables[0].cells[0]
+        updated_cell = reparsed.paragraphs[0].tables[0].cells[0][0]
         self.assertEqual(updated_cell.cell_style.background, "#FFF2CC")
         self.assertIsNone(updated_cell.cell_style.horizontal_align)
         self.assertEqual(updated_cell.paragraphs[0].para_style.align, "center")
@@ -608,7 +608,7 @@ class EditorApiTests(unittest.TestCase):
 
         source_bytes = self._build_sample_styled_table_hwpx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="hwpx")
-        cell = doc.paragraphs[0].tables[0].cells[0]
+        cell = doc.paragraphs[0].tables[0].cells[0][0]
 
         result = apply_document_edits(
             document=DocumentInput(
@@ -641,7 +641,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(top_border.get("width"), "0.7 mm")
 
         reparsed = DocIR.from_file(result.output_bytes, doc_type="hwpx")
-        updated_cell = reparsed.paragraphs[0].tables[0].cells[0]
+        updated_cell = reparsed.paragraphs[0].tables[0].cells[0][0]
         self.assertEqual(updated_cell.cell_style.border_top, "3px solid #445566")
 
     def test_apply_document_edits_writes_hwpx_table_placement_style(self) -> None:
@@ -810,7 +810,7 @@ class EditorApiTests(unittest.TestCase):
             edits=[
                 TextEdit(
                     target_kind="cell",
-                    target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
+                    target_id=doc.paragraphs[0].tables[0].cells[0][0].node_id,
                     expected_text="Left",
                     new_text="Changed",
                 )
@@ -818,12 +818,12 @@ class EditorApiTests(unittest.TestCase):
         )
 
         self.assertTrue(result.ok)
-        cell = doc.paragraphs[0].tables[0].cells[0]
+        cell = doc.paragraphs[0].tables[0].cells[0][0]
         run = cell.paragraphs[0].runs[0]
         self.assertEqual(result.modified_target_ids, [cell.node_id])
         self.assertEqual(result.modified_run_ids, [run.node_id])
         table = result.updated_doc_ir.paragraphs[0].tables[0]
-        self.assertEqual(table.cells[0].text, "Changed")
+        self.assertEqual(table.cells[0][0].text, "Changed")
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Changed\nRight")
 
     def test_apply_document_edits_replaces_docx_cell_text(self) -> None:
@@ -837,7 +837,7 @@ class EditorApiTests(unittest.TestCase):
             edits=[
                 TextEdit(
                     target_kind="cell",
-                    target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
+                    target_id=doc.paragraphs[0].tables[0].cells[0][0].node_id,
                     expected_text="Left",
                     new_text="Changed",
                 )
@@ -847,8 +847,8 @@ class EditorApiTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.output_filename, "table_edited.docx")
-        self.assertEqual(DocIR.from_file(result.output_bytes).paragraphs[0].tables[0].cells[0].text, "Changed")
-        self.assertEqual(result.updated_doc_ir.paragraphs[0].tables[0].cells[0].text, "Changed")
+        self.assertEqual(DocIR.from_file(result.output_bytes).paragraphs[0].tables[0].cells[0][0].text, "Changed")
+        self.assertEqual(result.updated_doc_ir.paragraphs[0].tables[0].cells[0][0].text, "Changed")
 
     def test_apply_document_edits_replaces_hwpx_cell_text(self) -> None:
         source_bytes = self._build_sample_table_hwpx_bytes()
@@ -861,7 +861,7 @@ class EditorApiTests(unittest.TestCase):
             edits=[
                 TextEdit(
                     target_kind="cell",
-                    target_id=doc.paragraphs[0].tables[0].cells[0].node_id,
+                    target_id=doc.paragraphs[0].tables[0].cells[0][0].node_id,
                     expected_text="Left",
                     new_text="Changed",
                 )
@@ -871,8 +871,8 @@ class EditorApiTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.output_filename, "table_edited.hwpx")
-        self.assertEqual(DocIR.from_file(result.output_bytes, doc_type="hwpx").paragraphs[0].tables[0].cells[0].text, "Changed")
-        self.assertEqual(result.updated_doc_ir.paragraphs[0].tables[0].cells[0].text, "Changed")
+        self.assertEqual(DocIR.from_file(result.output_bytes, doc_type="hwpx").paragraphs[0].tables[0].cells[0][0].text, "Changed")
+        self.assertEqual(result.updated_doc_ir.paragraphs[0].tables[0].cells[0][0].text, "Changed")
 
     def test_apply_document_edits_normalizes_hwpx_output_suffix_for_path_backed_writeback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -971,7 +971,7 @@ class EditorApiTests(unittest.TestCase):
             source_doc_type="docx",
         )
         second_id = doc.paragraphs[1].node_id
-        cell_id = doc.paragraphs[2].tables[0].cells[0].node_id
+        cell_id = doc.paragraphs[2].tables[0].cells[0][0].node_id
 
         result = apply_document_edits(
             document=DocumentInput(doc_ir=doc),
@@ -1012,7 +1012,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(result.updated_doc_ir.paragraphs[2].native_anchor.structural_path, "s1.p3")
         table = result.updated_doc_ir.paragraphs[3].tables[0]
         self.assertEqual(table.row_count, 2)
-        self.assertEqual(table.cells[0].text, "Line one\nLine two")
+        self.assertEqual(table.cells[0][0].text, "Line one\nLine two")
         self.assertTrue(result.created_target_ids)
 
     def test_apply_document_edits_writes_docx_paragraph_table_and_cells(self) -> None:
@@ -1046,7 +1046,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertIsNotNone(result.output_bytes)
         parsed = DocIR.from_file(result.output_bytes, doc_type="docx")
         self.assertEqual(parsed.paragraphs[0].text, "Preface")
-        self.assertEqual(parsed.paragraphs[-1].tables[0].cells[3].text, "D")
+        self.assertEqual(parsed.paragraphs[-1].tables[0].cells[1][1].text, "D")
         self.assertIsNotNone(result.updated_doc_ir)
         self.assertEqual(result.updated_doc_ir.paragraphs[1].node_id, doc.paragraphs[0].node_id)
 
@@ -1083,8 +1083,8 @@ class EditorApiTests(unittest.TestCase):
         table = parsed.paragraphs[1].tables[0]
         self.assertIsNotNone(table.table_style)
         self.assertGreater(table.table_style.width_pt or 0, 0)
-        self.assertEqual(table.cells[0].cell_style.border_top, "1px solid #000000")
-        self.assertGreater(table.cells[0].cell_style.width_pt or 0, 0)
+        self.assertEqual(table.cells[0][0].cell_style.border_top, "1px solid #000000")
+        self.assertGreater(table.cells[0][0].cell_style.width_pt or 0, 0)
 
     def test_apply_document_edits_mixes_structural_and_text_edits_in_order(self) -> None:
         source_bytes = self._build_sample_docx_bytes()
@@ -1156,7 +1156,7 @@ class EditorApiTests(unittest.TestCase):
 
         self.assertEqual(table_wrapper.page_number, anchor_page_number)
         self.assertEqual(inserted_paragraph.page_number, anchor_page_number)
-        self.assertEqual(table_wrapper.tables[0].cells[0].paragraphs[0].page_number, anchor_page_number)
+        self.assertEqual(table_wrapper.tables[0].cells[0][0].paragraphs[0].page_number, anchor_page_number)
 
         review = render_review_html(
             document=DocumentInput(doc_ir=updated),
@@ -1172,7 +1172,7 @@ class EditorApiTests(unittest.TestCase):
         source_bytes = self._build_sample_table_docx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="docx")
         table = doc.paragraphs[0].tables[0]
-        left_cell_id = table.cells[0].node_id
+        left_cell_id = table.cells[0][0].node_id
 
         result = apply_document_edits(
             document=DocumentInput(
@@ -1207,15 +1207,15 @@ class EditorApiTests(unittest.TestCase):
         parsed_table = parsed.paragraphs[0].tables[0]
         self.assertEqual(parsed_table.row_count, 2)
         self.assertEqual(parsed_table.col_count, 3)
-        self.assertEqual(parsed_table.cells[0].text, "Changed")
-        self.assertEqual(parsed_table.cells[1].text, "Middle top")
-        self.assertEqual(parsed_table.cells[-1].text, "Bottom right")
+        self.assertEqual(parsed_table.cells[0][0].text, "Changed")
+        self.assertEqual(parsed_table.cells[0][1].text, "Middle top")
+        self.assertEqual(parsed_table.cells[-1][-1].text, "Bottom right")
 
     def test_apply_document_edits_writes_hwpx_paragraph_and_table_changes(self) -> None:
         source_bytes = self._build_sample_table_hwpx_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="hwpx")
         table = doc.paragraphs[0].tables[0]
-        left_cell_id = table.cells[0].node_id
+        left_cell_id = table.cells[0][0].node_id
 
         result = apply_document_edits(
             document=DocumentInput(
@@ -1248,7 +1248,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertTrue(result.ok, result.validation.issues)
         parsed = DocIR.from_file(result.output_bytes, doc_type="hwpx")
         self.assertEqual(parsed.paragraphs[0].tables[0].row_count, 2)
-        self.assertEqual(parsed.paragraphs[0].tables[0].cells[0].text, "Changed")
+        self.assertEqual(parsed.paragraphs[0].tables[0].cells[0][0].text, "Changed")
         self.assertEqual(parsed.paragraphs[1].text, "After table")
 
     def test_apply_document_edits_writes_inline_visible_hwpx_table_defaults(self) -> None:
@@ -1287,14 +1287,14 @@ class EditorApiTests(unittest.TestCase):
         table = parsed.paragraphs[1].tables[0]
         self.assertIsNotNone(table.table_style)
         self.assertGreater(table.table_style.width_pt or 0, 0)
-        self.assertEqual(table.cells[0].cell_style.border_top, "1px solid #000000")
-        self.assertGreater(table.cells[0].cell_style.width_pt or 0, 0)
+        self.assertEqual(table.cells[0][0].cell_style.border_top, "1px solid #000000")
+        self.assertGreater(table.cells[0][0].cell_style.width_pt or 0, 0)
 
     def test_apply_document_edits_writes_hwpx_cell_after_prior_inserts_and_ignores_control_text(self) -> None:
         source_bytes = self._build_hwpx_table_after_intro_with_control_bytes()
         doc = DocIR.from_file(source_bytes, doc_type="hwpx")
         intro_id = doc.paragraphs[0].node_id
-        original_cell = doc.paragraphs[1].tables[0].cells[0]
+        original_cell = doc.paragraphs[1].tables[0].cells[0][0]
 
         self.assertEqual(original_cell.text, "Go Visible")
 
@@ -1331,7 +1331,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual([paragraph.text for paragraph in parsed.paragraphs], ["Intro", "Inserted paragraph", "Inserted table", "Changed"])
         self.assertNotIn("HIDDEN", "".join(paragraph.text for paragraph in parsed.paragraphs))
         self.assertIsNotNone(result.updated_doc_ir)
-        updated_cell = result.updated_doc_ir.paragraphs[3].tables[0].cells[0]
+        updated_cell = result.updated_doc_ir.paragraphs[3].tables[0].cells[0][0]
         self.assertEqual(updated_cell.node_id, original_cell.node_id)
         self.assertEqual(updated_cell.native_anchor.structural_path, "s1.p4.r1.tbl1.tr1.tc1")
 

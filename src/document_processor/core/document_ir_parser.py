@@ -155,7 +155,7 @@ def _assign_page_number_to_paragraph(paragraph: ParagraphIR, page_number: int | 
     paragraph.page_number = page_number
     for node in paragraph.content:
         if isinstance(node, TableIR):
-            for cell in node.cells:
+            for cell in node.iter_cells():
                 for cell_paragraph in cell.paragraphs:
                     _assign_page_number_to_paragraph(cell_paragraph, page_number)
 
@@ -577,11 +577,9 @@ def _parse_docx_table(
                     source_doc_type="docx",
                     parent_debug_path=table_id,
                     part_name="word/document.xml",
-                ),
-                row_index=tr_idx,
-                col_index=tc_idx,
+                )
             )
-            table_ir.cells.append(cell_ir)
+            table_ir.append_cell(cell_ir, row_index=tr_idx, col_index=tc_idx)
 
             cp_idx = 0
             current_paragraph: ParagraphIR | None = None
@@ -1057,11 +1055,9 @@ def _parse_hwpx_table(
                     cell_id,
                     source_doc_type="hwpx",
                     parent_debug_path=table_id,
-                ),
-                row_index=tr_idx,
-                col_index=tc_idx,
+                )
             )
-            table_ir.cells.append(cell_ir)
+            table_ir.append_cell(cell_ir, row_index=tr_idx, col_index=tc_idx)
 
             cell_paragraphs = _parse_hwpx_cell_paragraphs(cell_el)
             if not cell_paragraphs:
