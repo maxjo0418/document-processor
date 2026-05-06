@@ -24,9 +24,8 @@ single edit schema:
 
 ```python
 TextEdit(
-    target_kind="run",  # "paragraph", "run", or "cell"
     target_id="r_10b2809a0c03f6e1",
-    expected_text="old text",
+    expected_text_hash="hash-returned-by-read-or-list",
     new_text="new text",
     reason="optional note",
 )
@@ -56,9 +55,8 @@ result = apply_document_edits(
     document=DocumentInput(source_path="/path/to/source.docx"),
     edits=[
         TextEdit(
-            target_kind="paragraph",
             target_id="p_15cb9ef0efc99b82",
-            expected_text="Original paragraph text.",
+            expected_text_hash="hash-returned-by-read-or-list",
             new_text="Updated paragraph text.",
         )
     ],
@@ -80,9 +78,8 @@ result = apply_document_edits(
     document=DocumentInput(doc_ir=doc),
     edits=[
         TextEdit(
-            target_kind="run",
             target_id=doc.paragraphs[0].runs[0].node_id,
-            expected_text=doc.paragraphs[0].runs[0].text,
+            expected_text_hash=doc.paragraphs[0].runs[0].native_anchor.text_hash,
             new_text="Replacement text",
         )
     ],
@@ -94,9 +91,10 @@ updated_doc = result.updated_doc_ir
 
 ## Migration Notes
 
-- Replace `old_text` with `expected_text`.
+- Replace `old_text` with `expected_text_hash` from `read_document`,
+  `get_document_context`, or `list_editable_targets`.
 - Replace `run_id`, `paragraph_id`, or `cell_id` with `target_id`.
-- Set `target_kind` to `"run"`, `"paragraph"`, or `"cell"`.
+- Omit `target_kind` unless you want a compatibility assertion.
 - Use `DocumentInput(source_path=...)` for path-backed native write-back.
 - Use `DocumentInput(source_bytes=..., source_name=...)` for bytes-backed native
   write-back.

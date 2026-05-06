@@ -247,9 +247,8 @@ result = apply_document_edits(
     document=DocumentInput(source_path="/path/to/contract.docx"),
     edits=[
         TextEdit(
-            target_kind="paragraph",
             target_id=first_paragraph_id,
-            expected_text="Hello World",
+            expected_text_hash=preview.paragraphs[0].text_hash,
             new_text="Hello Legal World",
             reason="Expand wording",
         )
@@ -293,9 +292,8 @@ result = apply_document_edits(
     document=document,
     edits=[
         TextEdit(
-            target_kind="paragraph",
             target_id=preview.paragraphs[0].node_id,
-            expected_text="Hello World",
+            expected_text_hash=preview.paragraphs[0].text_hash,
             new_text="Hello Contract World",
             reason="Clarify wording",
         )
@@ -334,9 +332,8 @@ result = apply_document_edits(
     document=DocumentInput(doc_ir=doc),
     edits=[
         TextEdit(
-            target_kind="paragraph",
             target_id=first_paragraph_id,
-            expected_text="Hello World",
+            expected_text_hash=doc.paragraphs[0].native_anchor.text_hash,
             new_text="Hello Contract World",
         )
     ],
@@ -361,10 +358,12 @@ Output behavior depends on the input source:
   `output_path` is only written for path-backed input.
 - HWP inputs are written back as HWPX. `dry_run=True` validates and previews the
   edit batch without producing native output.
+- Text and style edit target kinds are inferred from `target_id`; provide
+  `target_kind` only when you want a compatibility assertion.
 
 ### Cell text edits
 
-Use `target_kind="cell"` to replace all editable text in a table cell. Multi-paragraph
+Target a cell id to replace all editable text in a table cell. Multi-paragraph
 cells must keep the same number of newline-separated text lines; this avoids creating or
 deleting native document paragraphs during a cell edit.
 
@@ -388,9 +387,8 @@ result = apply_document_edits(
     document=document,
     edits=[
         TextEdit(
-            target_kind="cell",
             target_id=first_cell_id,
-            expected_text="Old cell text",
+            expected_text_hash=cells.targets[0].text_hash,
             new_text="Updated cell text",
         )
     ],
@@ -404,9 +402,9 @@ print(result.modified_target_ids)
 Use `StructuralEdit` for insert/remove operations and table shape changes. These
 operations still target stable `node_id` values.
 
-`TextEdit(target_kind="cell")` preserves the existing paragraph count inside a
-cell. `StructuralEdit(operation="set_cell_text")` is the API to rebuild a cell's
-paragraphs from newline-separated text.
+`TextEdit` against a cell target preserves the existing paragraph count inside
+the cell. `StructuralEdit(operation="set_cell_text")` is the API to rebuild a
+cell's paragraphs from newline-separated text.
 
 Inserted tables are not bare XML shells. Native DOCX/HWPX write-back gives new
 tables a visible black grid, cell padding, and non-zero geometry. HWPX tables
@@ -444,7 +442,7 @@ result = apply_document_edits(
         StructuralEdit(
             operation="set_cell_text",
             target_id=cell_id,
-            expected_text="Old cell text",
+            expected_text_hash=next(t.text_hash for t in targets.targets if t.target_id == cell_id),
             text="Line one\nLine two",
         ),
         StructuralEdit(
@@ -472,6 +470,8 @@ physical path after inserts/removes.
 Use `StyleEdit` for flattened style mutations. Every style field is optional,
 which makes the DTO suitable for LLM tool schemas: set only the fields you want
 to change, and use `clear_fields` when a nullable style value should be removed.
+The target kind is inferred from `target_id`; provide `target_kind` only when you
+want the API to reject the edit if the id resolves to a different kind.
 
 ```python
 from document_processor import (
@@ -497,14 +497,12 @@ result = apply_document_edits(
     document=document,
     edits=[
         StyleEdit(
-            target_kind="run",
             target_id=run_id,
             bold=True,
             color="#445566",
             font_size_pt=16,
         ),
         StyleEdit(
-            target_kind="cell",
             target_id=cell_id,
             background="#FFF2CC",
             vertical_align="middle",
@@ -519,7 +517,6 @@ result = apply_document_edits(
             border_left="1pt single #445566",
         ),
         StyleEdit(
-            target_kind="table",
             target_id=table_id,
             placement_mode="floating",
             wrap="square",
@@ -629,6 +626,9 @@ for target in targets.targets:
 
 ## 8. Validate Edits Before Applying
 
+`apply_document_edits` validates every batch before applying it. Use this helper
+when you want validation-only feedback without a preview document.
+
 ```python
 from document_processor import (
     DocumentInput,
@@ -640,9 +640,8 @@ validation = validate_document_edits(
     document=DocumentInput(source_path="/path/to/contract.docx"),
     edits=[
         TextEdit(
-            target_kind="run",
             target_id="r_3f1ff7241702452b",
-            expected_text="wrong text",
+            expected_text_hash="wrong-hash",
             new_text="updated text",
         )
     ],
@@ -684,10 +683,11 @@ with open("review.html", "w", encoding="utf-8") as handle:
 ## 10. Edit Through Structured DTOs
 
 Exact text replacements should use `TextEdit`. Structural changes should use
-`StructuralEdit`. Style changes should use `StyleEdit`. All three go through
-`validate_document_edits` and `apply_document_edits` with flattened keyword
-arguments. This keeps LLM tool calls on structured edit DTOs and avoids exposing
-internal native write-back plumbing.
+`StructuralEdit`. Style changes should use `StyleEdit`. `apply_document_edits`
+validates before applying; use `dry_run=True` to validate and preview proposed
+changes without native output. `validate_document_edits` remains available when
+you only need validation feedback. This keeps LLM tool calls on structured edit
+DTOs and avoids exposing internal native write-back plumbing.
 
 ```python
 from document_processor import (
@@ -701,13 +701,13 @@ result = apply_document_edits(
     document=DocumentInput(source_path="/path/to/contract.hwpx"),
     edits=[
         TextEdit(
-            target_kind="run",
+            client_edit_id="edit-1",
             target_id="r_10b2809a0c03f6e1",
-            expected_text="World",
+            expected_text_hash="hash-returned-by-read-or-list",
             new_text="HWPX",
         ),
         StyleEdit(
-            target_kind="run",
+            client_edit_id="edit-2",
             target_id="r_10b2809a0c03f6e1",
             bold=True,
             color="#445566",
@@ -718,6 +718,7 @@ result = apply_document_edits(
 
 print(result.output_path)
 print(result.modified_target_ids)
+print(result.edit_results)
 ```
 
 The removed low-level edit engine names are documented in
@@ -771,6 +772,9 @@ For LLM or review tooling:
 3. Emit exact `TextEdit` objects for text replacements, `StructuralEdit`
    objects for insert/remove/table operations, or `StyleEdit` objects for
    flattened style mutations.
-4. Call `validate_document_edits(...)`.
-5. Call `apply_document_edits(...)`.
-6. Call `render_review_html(...)` for human review.
+4. Call `apply_document_edits(..., dry_run=True, return_doc_ir=True)` to validate
+   and preview proposed changes.
+5. Present `edit_results`, warnings, and preview output to your review layer when
+   HITL approval is required.
+6. Call `apply_document_edits(...)` to commit accepted edits.
+7. Call `render_review_html(...)` when highlighted human review output is needed.
