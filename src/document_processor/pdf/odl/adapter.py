@@ -858,11 +858,9 @@ def _append_table_cell(
     if cell_style is not None:
         cell_style.rowspan = rowspan
         cell_style.colspan = colspan
-    table.cells.append(
+    table.append_cell(
         TableCellIR(
             **_pdf_node_kwargs("cell", cell_unit_id),
-            row_index=row_index,
-            col_index=col_index,
             text=extract_text_from_odl_children(children),
             bbox=cell_bbox,
             cell_style=cell_style,
@@ -871,8 +869,10 @@ def _append_table_cell(
                 cell_unit_id=cell_unit_id,
                 default_page_number=default_page_number,
                 assets=assets,
-                ),
-        )
+            ),
+        ),
+        row_index=row_index,
+        col_index=col_index,
     )
 
 
@@ -947,19 +947,18 @@ def _build_strip_table_paragraph(
         return None
     col_count = max(len(row) for row in rows)
 
-    cells: list[TableCellIR] = []
+    cells: list[list[TableCellIR]] = []
     cell_index = 0
     for row_index, row in enumerate(rows, start=1):
+        cell_row: list[TableCellIR] = []
         for col_index, paragraph in enumerate(row, start=1):
             bbox = paragraph.bbox
             if bbox is None:
                 continue
             cell_index += 1
-            cells.append(
+            cell_row.append(
                 TableCellIR(
                     **_pdf_node_kwargs("cell", f"{unit_id}.cell.{cell_index}"),
-                    row_index=row_index,
-                    col_index=col_index,
                     text=paragraph.text,
                     bbox=bbox,
                     cell_style=CellStyleInfo(
@@ -971,6 +970,8 @@ def _build_strip_table_paragraph(
                     paragraphs=[paragraph.model_copy(deep=True)],
                 )
             )
+        if cell_row:
+            cells.append(cell_row)
     if not cells:
         return None
 
@@ -1258,8 +1259,8 @@ def _canonicalize_paragraph_unit_ids(
 
 def _canonicalize_table_unit_ids(table: TableIR, *, unit_id: str) -> None:
     _set_pdf_node_anchor(table, "table", unit_id)
-    for cell in table.cells:
-        cell_unit_id = f"{unit_id}.tr{cell.row_index}.tc{cell.col_index}"
+    for row_index, col_index, cell in table.iter_cell_positions():
+        cell_unit_id = f"{unit_id}.tr{row_index}.tc{col_index}"
         _set_pdf_node_anchor(cell, "cell", cell_unit_id, parent_debug_path=unit_id)
         for paragraph_index, paragraph in enumerate(cell.paragraphs, start=1):
             _canonicalize_paragraph_unit_ids(

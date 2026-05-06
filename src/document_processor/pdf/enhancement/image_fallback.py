@@ -119,7 +119,7 @@ def _iter_images(paragraphs: Iterable[ParagraphIR]) -> Iterable[tuple[ParagraphI
             if isinstance(node, ImageIR):
                 yield paragraph, node
             elif isinstance(node, TableIR):
-                for cell in node.cells:
+                for cell in node.iter_cells():
                     yield from _iter_images(cell.paragraphs)
 
 

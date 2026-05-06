@@ -61,6 +61,40 @@ with open("/path/to/contract.docx", "rb") as handle:
 print(doc.paragraphs[0].text)
 ```
 
+## Logging
+
+The package logger is `document_processor`. It is initialized automatically with
+level `WARNING` and a console handler. Enable more detail or file output once at
+application startup:
+
+```python
+from document_processor import DocIR, configure_logging, get_logger
+
+configure_logging(level="INFO")
+configure_logging(level="DEBUG", log_file="logs/document-processor.log")
+
+doc = DocIR.from_file("/path/to/contract.docx")
+
+logger = get_logger(__name__)
+logger.info("Loaded %d paragraphs", len(doc.paragraphs))
+```
+
+Inside package helpers, use child loggers instead of `print()`:
+
+```python
+from document_processor import get_logger
+
+logger = get_logger(__name__)
+
+
+def helper() -> None:
+    logger.debug("Detailed helper state")
+    logger.warning("Recoverable issue")
+```
+
+`DocIR.configure_logging(...)` is an equivalent convenience wrapper around
+`configure_logging(...)`.
+
 ## 2. Build A Synthetic `DocIR`
 
 This is useful for tests, prototyping, and examples.
@@ -528,6 +562,12 @@ Cell targets returned by `list_editable_targets` include `parent_table_id`,
 `row_index`, `column_index`, `rowspan`, and `colspan`. Use those fields to find
 the cell id for a row/column coordinate before applying cell `width_pt` or
 `height_pt`.
+
+In `DocIR`, table cells are row-major and two-dimensional:
+`table.cells[0][0]` is the first row's first cell. Merged-cell covered
+coordinates point to the same `TableCellIR` object as the merge origin, so a
+cell spanning columns 2-3 appears at both `table.cells[row][1]` and
+`table.cells[row][2]`.
 
 Floating placement write-back is native-format oriented. The edited DOCX/HWPX
 file receives placement XML, and the preview `updated_doc_ir` contains the

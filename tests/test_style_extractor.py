@@ -56,12 +56,12 @@ class StyleExtractorTests(unittest.TestCase):
                             bbox=BoundingBox(left_pt=10, bottom_pt=20, right_pt=110, top_pt=120),
                             table_style=TableStyleInfo(row_count=1, col_count=1, width_pt=120.0, height_pt=48.0),
                             cells=[
-                                TableCellIR(
-                                    **_pdf_node_kwargs("cell", "s1.p2.r1.tbl1.tr1.tc1"),
-                                    row_index=1,
-                                    col_index=1,
-                                    cell_style=CellStyleInfo(rowspan=1, colspan=1, width_pt=120.0, height_pt=48.0),
-                                )
+                                [
+                                    TableCellIR(
+                                        **_pdf_node_kwargs("cell", "s1.p2.r1.tbl1.tr1.tc1"),
+                                        cell_style=CellStyleInfo(rowspan=1, colspan=1, width_pt=120.0, height_pt=48.0),
+                                    )
+                                ]
                             ],
                         )
                     ],

@@ -63,6 +63,29 @@ PDF parsing uses the same high-level entry point:
 doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
 ```
 
+## Logging
+
+`document_processor` initializes a package logger named `document_processor` at
+import time. The default level is `WARNING` and logs go to the console.
+
+```python
+from document_processor import DocIR, configure_logging, get_logger
+
+configure_logging(level="INFO")
+configure_logging(level="DEBUG", log_file="logs/docir.log")
+
+doc = DocIR.from_file("/path/to/file.docx")
+
+logger = get_logger(__name__)
+logger.warning("Handled document %s", doc.doc_id)
+```
+
+You can also configure the same logger through `DocIR`:
+
+```python
+DocIR.configure_logging(level="INFO", log_file="logs/docir.log")
+```
+
 ## Custom metadata
 
 All IR models include a `.meta` field for attaching processing metadata
