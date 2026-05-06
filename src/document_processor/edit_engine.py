@@ -14,7 +14,7 @@ import zipfile
 
 from pydantic import BaseModel, Field
 
-from .api_types import StyleEdit, StructuralEdit, TextEdit
+from .api_types import AppliedEditResult, StyleEdit, StructuralEdit, TextEdit
 from .core import convert_hwp_to_hwpx_bytes
 from .io_utils import SourceDocType, TemporarySourcePath, coerce_source_to_supported_value, infer_doc_type
 from .models import DocIR, ImageIR, NativeAnchor, NodeKind, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id, _make_native_anchor
@@ -30,7 +30,8 @@ class EditValidationError(ValueError):
         target_kind: str | None = None,
         target_id: str | None = None,
         operation: str | None = None,
-        expected_text: str | None = None,
+        expected_text_hash: str | None = None,
+        current_text_hash: str | None = None,
         current_text: str | None = None,
     ) -> None:
         super().__init__(message)
@@ -38,7 +39,8 @@ class EditValidationError(ValueError):
         self.target_kind = target_kind
         self.target_id = target_id
         self.operation = operation
-        self.expected_text = expected_text
+        self.expected_text_hash = expected_text_hash
+        self.current_text_hash = current_text_hash
         self.current_text = current_text
 
 
@@ -57,7 +59,14 @@ class _EditEngineResult(BaseModel):
     created_target_ids: list[str] = Field(default_factory=list)
     removed_target_ids: list[str] = Field(default_factory=list)
     modified_run_ids: list[str] = Field(default_factory=list)
+    edit_results: list[AppliedEditResult] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+def _text_hash(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
 class _EditableRunRef:
@@ -845,9 +854,16 @@ def _validate_paragraph_edit(index: _EditableDocIndex, edit: TextEdit) -> _Edita
         raise EditValidationError(
             f"Paragraph edit targets unsupported mixed content (tables/images): {edit.target_id}"
         )
-    if paragraph.text != edit.expected_text:
+    current_hash = _text_hash(paragraph.text)
+    if current_hash != edit.expected_text_hash:
         raise EditValidationError(
-            f"Paragraph text mismatch for {edit.target_id}: expected {edit.expected_text!r}, got {paragraph.text!r}"
+            f"Paragraph text hash mismatch for {edit.target_id}.",
+            code="text_hash_mismatch",
+            target_kind="paragraph",
+            target_id=edit.target_id,
+            expected_text_hash=edit.expected_text_hash,
+            current_text_hash=current_hash,
+            current_text=paragraph.text,
         )
     return paragraph
 
@@ -856,9 +872,16 @@ def _validate_run_edit(index: _EditableDocIndex, edit: TextEdit) -> _EditableRun
     run = index.runs.get(edit.target_id)
     if run is None:
         raise EditValidationError(f"Run does not exist: {edit.target_id}")
-    if run.text != edit.expected_text:
+    current_hash = _text_hash(run.text)
+    if current_hash != edit.expected_text_hash:
         raise EditValidationError(
-            f"Run text mismatch for {edit.target_id}: expected {edit.expected_text!r}, got {run.text!r}"
+            f"Run text hash mismatch for {edit.target_id}.",
+            code="text_hash_mismatch",
+            target_kind="run",
+            target_id=edit.target_id,
+            expected_text_hash=edit.expected_text_hash,
+            current_text_hash=current_hash,
+            current_text=run.text,
         )
     return run
 
@@ -873,9 +896,16 @@ def _validate_cell_edit(index: _EditableDocIndex, edit: TextEdit) -> _EditableCe
         )
     if not cell.paragraphs or any(not paragraph.runs for paragraph in cell.paragraphs):
         raise EditValidationError(f"Cell does not contain editable text runs: {edit.target_id}")
-    if cell.text != edit.expected_text:
+    current_hash = _text_hash(cell.text)
+    if current_hash != edit.expected_text_hash:
         raise EditValidationError(
-            f"Cell text mismatch for {edit.target_id}: expected {edit.expected_text!r}, got {cell.text!r}"
+            f"Cell text hash mismatch for {edit.target_id}.",
+            code="text_hash_mismatch",
+            target_kind="cell",
+            target_id=edit.target_id,
+            expected_text_hash=edit.expected_text_hash,
+            current_text_hash=current_hash,
+            current_text=cell.text,
         )
     expected_paragraphs = len(cell.paragraphs)
     new_paragraphs = len(edit.new_text.split("\n"))
@@ -1652,15 +1682,17 @@ def _resolve_table_axis(
     return table_location.node, axis_index
 
 
-def _validate_expected_text(expected_text: str | None, current_text: str, operation: StructuralEdit, *, target_kind: str) -> None:
-    if expected_text is not None and current_text != expected_text:
+def _validate_expected_text_hash(expected_text_hash: str | None, current_text: str, operation: StructuralEdit, *, target_kind: str) -> None:
+    current_text_hash = _text_hash(current_text)
+    if expected_text_hash is not None and current_text_hash != expected_text_hash:
         raise EditValidationError(
-            f"Text mismatch for {operation.target_id}.",
-            code="text_mismatch",
+            f"Text hash mismatch for {operation.target_id}.",
+            code="text_hash_mismatch",
             target_kind=target_kind,
             target_id=operation.target_id,
             operation=operation.operation,
-            expected_text=expected_text,
+            expected_text_hash=expected_text_hash,
+            current_text_hash=current_text_hash,
             current_text=current_text,
         )
 
@@ -1766,7 +1798,7 @@ def _apply_structural_doc_ir_operation(
                 target_id=operation.target_id,
                 operation=operation.operation,
             )
-        _validate_expected_text(operation.expected_text, paragraph_location.node.text, operation, target_kind="paragraph")
+        _validate_expected_text_hash(operation.expected_text_hash, paragraph_location.node.text, operation, target_kind="paragraph")
         for node_id in _collect_doc_ir_node_ids(paragraph_location.node):
             _append_unique(result.removed_target_ids, node_id)
         del paragraph_location.container[paragraph_location.index]
@@ -1833,7 +1865,7 @@ def _apply_structural_doc_ir_operation(
                 target_id=operation.target_id,
                 operation=operation.operation,
             )
-        _validate_expected_text(operation.expected_text, run_location.node.text, operation, target_kind="run")
+        _validate_expected_text_hash(operation.expected_text_hash, run_location.node.text, operation, target_kind="run")
         run_location.paragraph.content.pop(run_location.content_index)
         run_location.paragraph.recompute_text()
         _append_unique(result.removed_target_ids, operation.target_id)
@@ -1904,7 +1936,7 @@ def _apply_structural_doc_ir_operation(
                 target_id=operation.target_id,
                 operation=operation.operation,
             )
-        _validate_expected_text(operation.expected_text, cell_location.node.text, operation, target_kind="cell")
+        _validate_expected_text_hash(operation.expected_text_hash, cell_location.node.text, operation, target_kind="cell")
         _replace_cell_paragraphs(
             cell_location.node,
             operation.text or "",
@@ -3321,8 +3353,18 @@ def _apply_docx_structural_operation(doc, operation: StructuralEdit, result: _Ed
         if paragraph_location is None:
             raise EditValidationError("Paragraph does not exist.", code="target_not_found", target_kind="paragraph", target_id=operation.target_id)
         current_text = paragraph_location.paragraph.text or ""
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Paragraph text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Paragraph text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="paragraph",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         parent = paragraph_location.paragraph._p.getparent()
         parent.remove(paragraph_location.paragraph._p)
         _ensure_docx_container_has_paragraph(parent)
@@ -3357,8 +3399,18 @@ def _apply_docx_structural_operation(doc, operation: StructuralEdit, result: _Ed
         if run_location is None:
             raise EditValidationError("Run does not exist.", code="target_not_found", target_kind="run", target_id=operation.target_id)
         current_text = run_location.run.text or ""
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Run text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Run text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="run",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         run_location.run._r.getparent().remove(run_location.run._r)
         result.operations_applied += 1
         return
@@ -3390,8 +3442,18 @@ def _apply_docx_structural_operation(doc, operation: StructuralEdit, result: _Ed
         if cell_location is None:
             raise EditValidationError("Cell does not exist.", code="target_not_found", target_kind="cell", target_id=operation.target_id)
         current_text = cell_location.cell.text or ""
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Cell text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Cell text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="cell",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         _docx_set_cell_text(cell_location.cell, operation.text or "")
         result.operations_applied += 1
         return
@@ -4754,8 +4816,18 @@ def _apply_hwpx_structural_operation(archive: _EditableHwpxArchive, operation: S
         if paragraph_location is None:
             raise EditValidationError("Paragraph does not exist.", code="target_not_found", target_kind="paragraph", target_id=operation.target_id)
         current_text = _hwpx_paragraph_visible_text(paragraph_location.element)
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Paragraph text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Paragraph text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="paragraph",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         paragraph_location.parent.remove(paragraph_location.element)
         _ensure_hwpx_parent_has_paragraph(paragraph_location.parent)
         result.operations_applied += 1
@@ -4785,8 +4857,18 @@ def _apply_hwpx_structural_operation(archive: _EditableHwpxArchive, operation: S
         if run_location is None:
             raise EditValidationError("Run does not exist.", code="target_not_found", target_kind="run", target_id=operation.target_id)
         current_text = _run_text(run_location.element)
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Run text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Run text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="run",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         run_location.parent.remove(run_location.element)
         if not run_location.parent.findall(f"{_HP}run"):
             run_location.parent.append(_hwpx_el("run"))
@@ -4829,8 +4911,18 @@ def _apply_hwpx_structural_operation(archive: _EditableHwpxArchive, operation: S
         if cell_location is None:
             raise EditValidationError("Cell does not exist.", code="target_not_found", target_kind="cell", target_id=operation.target_id)
         current_text = _hwpx_cell_visible_text(cell_location.element)
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Cell text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Cell text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="cell",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         _hwpx_set_cell_text(cell_location.element, operation.text or "")
         result.operations_applied += 1
         return

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 from pathlib import Path
 import tempfile
@@ -22,6 +23,10 @@ from document_processor import (
 
 
 class EditorApiTests(unittest.TestCase):
+    @staticmethod
+    def _text_hash(text: str) -> str:
+        return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
     @staticmethod
     def _build_sample_docx_bytes() -> bytes:
         from docx import Document
@@ -258,6 +263,8 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(result.paragraphs[0].runs[1].text, "World")
         self.assertTrue(result.paragraphs[0].runs[1].node_id.startswith("r_"))
         self.assertEqual(result.paragraphs[0].text, "Hello World")
+        self.assertEqual(result.paragraphs[0].text_hash, self._text_hash("Hello World"))
+        self.assertEqual(result.paragraphs[0].runs[1].text_hash, self._text_hash("World"))
         self.assertEqual(
             [(run.text, run.start, run.end) for run in result.paragraphs[0].runs],
             [("Hello ", 0, 6), ("World", 6, 11)],
@@ -297,6 +304,7 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(result.paragraphs[0].text, "Second")
         self.assertEqual(result.paragraphs[0].node_id, doc.paragraphs[1].node_id)
         self.assertEqual(result.paragraphs[0].native_anchor.debug_path, "s1.p2")
+        self.assertEqual(result.paragraphs[0].text_hash, self._text_hash("Second"))
         self.assertEqual(result.paragraphs[0].runs[0].start, 0)
         self.assertEqual(result.paragraphs[0].runs[0].end, len("Second"))
 
@@ -313,7 +321,7 @@ class EditorApiTests(unittest.TestCase):
                 TextEdit(
                     target_kind="paragraph",
                     target_id=doc.paragraphs[0].node_id,
-                    expected_text="Hello World",
+                    expected_text_hash=self._text_hash("Hello World"),
                     new_text="Hello Legal World",
                     reason="Expand wording",
                 )
@@ -344,7 +352,7 @@ class EditorApiTests(unittest.TestCase):
                 TextEdit(
                     target_kind="paragraph",
                     target_id=doc.paragraphs[0].node_id,
-                    expected_text="Hello World",
+                    expected_text_hash=self._text_hash("Hello World"),
                     new_text="Hello Contract World",
                     reason="Expand wording",
                 )
@@ -386,6 +394,58 @@ class EditorApiTests(unittest.TestCase):
         self.assertTrue(updated_run.run_style.bold)
         self.assertEqual(updated_run.run_style.color, "#112233")
         self.assertEqual(updated_run.run_style.size_pt, 14)
+
+    def test_apply_document_edits_infers_style_target_kind(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1": "Hello",
+            },
+            source_doc_type="docx",
+        )
+        run_id = doc.paragraphs[0].runs[0].node_id
+
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                StyleEdit(
+                    client_edit_id="style-1",
+                    target_id=run_id,
+                    bold=True,
+                )
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        self.assertTrue(result.updated_doc_ir.paragraphs[0].runs[0].run_style.bold)
+        self.assertEqual(result.edit_results[0].client_edit_id, "style-1")
+        self.assertEqual(result.edit_results[0].target_kind, "run")
+        self.assertEqual(result.edit_results[0].modified_target_ids, [run_id])
+
+    def test_apply_document_edits_rejects_inferred_style_field_mismatch(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1": "Hello",
+            },
+            source_doc_type="docx",
+        )
+
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                StyleEdit(
+                    client_edit_id="style-1",
+                    target_id=doc.paragraphs[0].runs[0].node_id,
+                    background="#FFFF00",
+                )
+            ],
+            return_doc_ir=True,
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.validation.issues[0].code, "invalid_style")
+        self.assertEqual(result.edit_results[0].client_edit_id, "style-1")
+        self.assertFalse(result.edit_results[0].ok)
 
     def test_apply_document_edits_broadcasts_doc_ir_cell_dimensions(self) -> None:
         doc = DocIR.from_mapping(
@@ -693,7 +753,7 @@ class EditorApiTests(unittest.TestCase):
                 TextEdit(
                     target_kind="paragraph",
                     target_id=target_id,
-                    expected_text="Hello World",
+                    expected_text_hash=self._text_hash("Hello World"),
                     new_text="Hello Stable World",
                 )
             ],
@@ -704,6 +764,56 @@ class EditorApiTests(unittest.TestCase):
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Stable World")
         self.assertEqual(result.updated_doc_ir.paragraphs[0].node_id, target_id)
 
+    def test_apply_document_edits_infers_text_target_kind(self) -> None:
+        doc = DocIR.from_mapping(
+            {
+                "s1.p1.r1": "Hello ",
+                "s1.p1.r2": "World",
+            },
+            source_doc_type="docx",
+        )
+        target_id = doc.paragraphs[0].node_id
+
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                TextEdit(
+                    client_edit_id="edit-1",
+                    target_id=target_id,
+                    expected_text_hash=self._text_hash("Hello World"),
+                    new_text="Hello Inferred World",
+                )
+            ],
+        )
+
+        self.assertTrue(result.ok, result.validation.issues)
+        self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Hello Inferred World")
+        self.assertEqual(len(result.edit_results), 1)
+        self.assertEqual(result.edit_results[0].client_edit_id, "edit-1")
+        self.assertEqual(result.edit_results[0].target_kind, "paragraph")
+        self.assertEqual(result.edit_results[0].modified_target_ids, [target_id])
+
+    def test_apply_document_edits_rejects_explicit_text_target_kind_mismatch(self) -> None:
+        doc = DocIR.from_mapping({"s1.p1.r1": "Hello"}, source_doc_type="docx")
+
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                TextEdit(
+                    client_edit_id="edit-1",
+                    target_kind="paragraph",
+                    target_id=doc.paragraphs[0].runs[0].node_id,
+                    expected_text_hash=self._text_hash("Hello"),
+                    new_text="Changed",
+                )
+            ],
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.validation.issues[0].code, "target_kind_mismatch")
+        self.assertEqual(result.edit_results[0].client_edit_id, "edit-1")
+        self.assertFalse(result.edit_results[0].ok)
+
     def test_apply_document_edits_dry_run_returns_text_preview_without_native_output(self) -> None:
         doc = DocIR.from_mapping({"s1.p1.r1": "Hello"}, source_doc_type="docx")
 
@@ -713,7 +823,7 @@ class EditorApiTests(unittest.TestCase):
                 TextEdit(
                     target_kind="run",
                     target_id=doc.paragraphs[0].runs[0].node_id,
-                    expected_text="Hello",
+                    expected_text_hash=self._text_hash("Hello"),
                     new_text="Preview",
                 )
             ],
@@ -727,6 +837,8 @@ class EditorApiTests(unittest.TestCase):
         self.assertIsNone(result.output_bytes)
         self.assertEqual(result.updated_doc_ir.paragraphs[0].text, "Preview")
         self.assertEqual(doc.paragraphs[0].text, "Hello")
+        self.assertEqual(result.edit_results[0].target_kind, "run")
+        self.assertEqual(result.edit_results[0].modified_target_ids, [doc.paragraphs[0].runs[0].node_id])
 
     def test_apply_document_edits_rejects_missing_text_target_id(self) -> None:
         doc = DocIR.from_mapping(
@@ -743,7 +855,7 @@ class EditorApiTests(unittest.TestCase):
                 TextEdit(
                     target_kind="paragraph",
                     target_id="missing",
-                    expected_text="Hello",
+                    expected_text_hash=self._text_hash("Hello"),
                     new_text="Changed",
                 )
             ],
@@ -751,6 +863,25 @@ class EditorApiTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.validation.issues[0].code, "target_not_found")
+
+    def test_apply_document_edits_rejects_text_hash_mismatch(self) -> None:
+        doc = DocIR.from_mapping({"s1.p1.r1": "Hello"}, source_doc_type="docx")
+
+        result = apply_document_edits(
+            document=DocumentInput(doc_ir=doc),
+            edits=[
+                TextEdit(
+                    target_id=doc.paragraphs[0].node_id,
+                    expected_text_hash=self._text_hash("Wrong"),
+                    new_text="Changed",
+                )
+            ],
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.validation.issues[0].code, "text_hash_mismatch")
+        self.assertEqual(result.validation.issues[0].current_text_hash, self._text_hash("Hello"))
+        self.assertEqual(result.edit_results[0].validation_issue.code, "text_hash_mismatch")
 
     def test_list_editable_targets_includes_cell_targets(self) -> None:
         doc = DocIR.from_mapping(
@@ -773,6 +904,7 @@ class EditorApiTests(unittest.TestCase):
                 ("cell", "s1.p1.r1.tbl1.tr1.tc2", "Right"),
             ],
         )
+        self.assertEqual([target.text_hash for target in result.targets], [self._text_hash("Left"), self._text_hash("Right")])
         table_id = doc.paragraphs[0].tables[0].node_id
         self.assertEqual(
             [
@@ -811,7 +943,7 @@ class EditorApiTests(unittest.TestCase):
                 TextEdit(
                     target_kind="cell",
                     target_id=doc.paragraphs[0].tables[0].cells[0][0].node_id,
-                    expected_text="Left",
+                    expected_text_hash=self._text_hash("Left"),
                     new_text="Changed",
                 )
             ],
@@ -838,7 +970,7 @@ class EditorApiTests(unittest.TestCase):
                 TextEdit(
                     target_kind="cell",
                     target_id=doc.paragraphs[0].tables[0].cells[0][0].node_id,
-                    expected_text="Left",
+                    expected_text_hash=self._text_hash("Left"),
                     new_text="Changed",
                 )
             ],
@@ -862,7 +994,7 @@ class EditorApiTests(unittest.TestCase):
                 TextEdit(
                     target_kind="cell",
                     target_id=doc.paragraphs[0].tables[0].cells[0][0].node_id,
-                    expected_text="Left",
+                    expected_text_hash=self._text_hash("Left"),
                     new_text="Changed",
                 )
             ],
@@ -887,7 +1019,7 @@ class EditorApiTests(unittest.TestCase):
                     TextEdit(
                         target_kind="run",
                         target_id=doc.paragraphs[0].runs[1].node_id,
-                        expected_text="World",
+                        expected_text_hash=self._text_hash("World"),
                         new_text="HWPX",
                         reason="Rename token",
                     )
@@ -908,7 +1040,7 @@ class EditorApiTests(unittest.TestCase):
         edit = TextEdit(
             target_kind="run",
             target_id=doc.paragraphs[0].runs[1].node_id,
-            expected_text="World",
+            expected_text_hash=self._text_hash("World"),
             new_text="HWPX",
             reason="Rename token",
         )
@@ -942,7 +1074,7 @@ class EditorApiTests(unittest.TestCase):
                     TextEdit(
                         target_kind="run",
                         target_id=doc.paragraphs[0].runs[1].node_id,
-                        expected_text="World",
+                        expected_text_hash=self._text_hash("World"),
                         new_text="HWPX",
                         reason="Rename token",
                     )
@@ -991,7 +1123,7 @@ class EditorApiTests(unittest.TestCase):
                 StructuralEdit(
                     operation="set_cell_text",
                     target_id=cell_id,
-                    expected_text="Left",
+                    expected_text_hash=self._text_hash("Left"),
                     text="Line one\nLine two",
                 ),
                 StructuralEdit(
@@ -1106,7 +1238,7 @@ class EditorApiTests(unittest.TestCase):
                 TextEdit(
                     target_kind="paragraph",
                     target_id=second_id,
-                    expected_text="Second paragraph",
+                    expected_text_hash=self._text_hash("Second paragraph"),
                     new_text="Updated second paragraph",
                 ),
             ],
@@ -1183,7 +1315,7 @@ class EditorApiTests(unittest.TestCase):
                 StructuralEdit(
                     operation="set_cell_text",
                     target_id=left_cell_id,
-                    expected_text="Left",
+                    expected_text_hash=self._text_hash("Left"),
                     text="Changed",
                 ),
                 StructuralEdit(
@@ -1232,7 +1364,7 @@ class EditorApiTests(unittest.TestCase):
                 StructuralEdit(
                     operation="set_cell_text",
                     target_id=left_cell_id,
-                    expected_text="Left",
+                    expected_text_hash=self._text_hash("Left"),
                     text="Changed",
                 ),
                 StructuralEdit(
@@ -1319,7 +1451,7 @@ class EditorApiTests(unittest.TestCase):
                 StructuralEdit(
                     operation="set_cell_text",
                     target_id=original_cell.node_id,
-                    expected_text="Go Visible",
+                    expected_text_hash=self._text_hash("Go Visible"),
                     text="Changed",
                 ),
             ],

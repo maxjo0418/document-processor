@@ -324,9 +324,8 @@ def run_annotation_suite(
 
 def build_text_edit(*, edit_target: EditableTarget, replacement: str) -> TextEdit:
     return TextEdit(
-        target_kind=edit_target.target_kind,
         target_id=edit_target.target_id,
-        expected_text=edit_target.current_text,
+        expected_text_hash=edit_target.text_hash,
         new_text=replacement,
         reason="Manual edit smoke check.",
     )
@@ -597,7 +596,7 @@ def build_structural_operations(
         StructuralEdit(
             operation="set_cell_text",
             target_id=cell_target.target_id,
-            expected_text=cell_target.current_text,
+            expected_text_hash=cell_target.text_hash,
             text=cell_text,
             reason="Manual structural cell replacement smoke check.",
         )
@@ -672,7 +671,6 @@ def build_style_edits(
         if target is None:
             return
         edit = StyleEdit(
-            target_kind=target.target_kind,  # type: ignore[arg-type]
             target_id=target.target_id,
             **edit_kwargs,
         )

@@ -241,7 +241,8 @@ Fields:
 - `part_name`: package part or source segment name, such as `word/document.xml`,
   `Contents/section0.xml`, or `page:3`.
 - `structural_path`: optional parser-native structural locator.
-- `text_hash`: SHA-1 hash of the source text for drift detection.
+- `text_hash`: SHA-1 hash of the source text when available. Public edit guard
+  hashes are also returned on read/context/target DTOs.
 
 `NativeAnchor` helps a writer or external parser reconnect a stable `node_id` to
 native structures. It is returned for inspection, but LLM edit and annotation calls
@@ -398,6 +399,7 @@ Response fields:
 Each paragraph contains:
 
 - `text`: editable paragraph text without generated list markers.
+- `text_hash`: hash of `text` for `TextEdit.expected_text_hash`.
 - `display_text`: readable text with resolved list markers prefixed when present.
 - `list_info`: optional resolved list marker metadata.
 
@@ -456,13 +458,13 @@ Validation checks include:
 
 - target exists
 - target kind is valid for the requested operation
-- exact text edits match `expected_text`
+- exact text edits match `expected_text_hash`
 - exact paragraph text edits do not target mixed table/image paragraphs
 - exact cell text edits preserve existing cell paragraph count
-- optional `expected_text` guards match
+- optional `expected_text_hash` guards match
 - inserted table rows are rectangular
 - inserted row/column values match the target table shape
-- style targets exist and match `target_kind`
+- style targets exist and match `target_kind` when provided
 - style fields are valid for the selected target kind
 - native write-back type is supported when native source data is present
 
@@ -513,6 +515,7 @@ Response fields:
 - `created_target_ids`
 - `removed_target_ids`
 - `modified_run_ids`
+- `edit_results`
 - `warnings`
 - `validation`
 
@@ -543,6 +546,8 @@ Output options:
 - `dry_run=True` validates and previews edits without native output. Applied
   counters are returned as `0`; preview target id lists and warnings are still
   populated, and `updated_doc_ir` is included only when `return_doc_ir=True`.
+  `edit_results` contain the per-edit preview effects so callers can display
+  proposed changes before committing them.
 
 Native write-back is currently supported for `docx`, `hwpx`, and `hwp`.
 For `.hwp`, edited output is written as `.hwpx`.
@@ -576,14 +581,20 @@ Response fields:
 Fields:
 
 - `edit_type: Literal["text"] = "text"`
-- `target_kind: Literal["paragraph", "run", "cell"]`
+- `client_edit_id: str | None`
+- `target_kind: Literal["paragraph", "run", "cell"] | None`
 - `target_id: str`
-- `expected_text: str`
+- `expected_text_hash: str`
 - `new_text: str`
 - `reason: str = ""`
 
 Use the `node_id` returned by `read_document`, `get_document_context`, or
 `list_editable_targets` as `target_id`.
+`target_kind` is optional and inferred from `target_id`; when supplied, it is
+treated as a compatibility assertion and rejected if it does not match.
+Use `client_edit_id` when a caller needs to correlate validation/apply results
+back to a proposal item.
+Use the `text_hash` returned by read/context/target APIs as `expected_text_hash`.
 
 Cell text edits replace the full text of a table cell. For multi-paragraph cells, `new_text`
 must contain the same number of newline-separated lines as the current cell text; the API
@@ -594,10 +605,11 @@ does not create or delete paragraphs inside cells.
 Fields:
 
 - `edit_type: Literal["structural"] = "structural"`
+- `client_edit_id`
 - `operation`
 - `target_id`
 - `position`
-- `expected_text`
+- `expected_text_hash`
 - `text`
 - `rows`
 - `values`
@@ -611,14 +623,15 @@ Operation field usage:
 
 - `insert_paragraph`: target a paragraph with `position="before"|"after"` or a
   cell with `position="start"|"end"`; set `text`.
-- `remove_paragraph`: target a paragraph; optional `expected_text`.
+- `remove_paragraph`: target a paragraph; optional `expected_text_hash`.
 - `insert_run`: target a run with `position="before"|"after"` or a paragraph
   with `position="start"|"end"`; set `text`.
-- `remove_run`: target a run; optional `expected_text`.
+- `remove_run`: target a run; optional `expected_text_hash`.
 - `insert_table`: target a paragraph with `position="before"|"after"`; set
   rectangular `rows`.
 - `remove_table`: target a table.
 - `set_cell_text`: target a cell; set `text`. Newlines create cell paragraphs.
+  `expected_text_hash` is optional.
 - `insert_table_row`: target a cell to anchor its row, or a table with
   `row_index`; set optional row `values`.
 - `remove_table_row`: target a cell to remove its row, or a table with
@@ -640,7 +653,8 @@ back to the same defaults only when the target table lacks usable properties.
 Fields:
 
 - `edit_type: Literal["style"] = "style"`
-- `target_kind: Literal["paragraph", "run", "cell", "table", "image"]`
+- `client_edit_id`
+- `target_kind: Literal["paragraph", "run", "cell", "table", "image"] | None`
 - `target_id`
 - `reason`
 - run style fields: `bold`, `italic`, `underline`, `strikethrough`,
@@ -661,6 +675,8 @@ Fields:
 All style fields default to `None`, and `None` means "leave unchanged".
 Use `clear_fields` to remove a nullable style value. For booleans, `False`
 means "set false".
+`target_kind` is optional and inferred from `target_id`; when omitted,
+target-specific style-field validation runs after the target is resolved.
 
 Native write-back notes:
 
@@ -683,6 +699,32 @@ Native write-back notes:
   native-style values such as `"1pt single #445566"`. HTML rendering normalizes
   `single` to CSS `solid`; DOCX/HWPX write-back maps border values to native
   border records.
+
+### `AppliedEditResult`
+
+Per-edit correlation result returned in `ApplyDocumentEditsResult.edit_results`.
+
+Fields:
+
+- `edit_index`
+- `client_edit_id`
+- `edit_type`
+- `ok`
+- `target_id`
+- `target_kind`
+- `operation`
+- `edits_applied`
+- `operations_applied`
+- `styles_applied`
+- `modified_target_ids`
+- `created_target_ids`
+- `removed_target_ids`
+- `modified_run_ids`
+- `warnings`
+- `validation_issue`
+
+For `dry_run=True`, these fields describe preview effects rather than committed
+native output.
 
 ### `TextAnnotation`
 
@@ -708,6 +750,7 @@ Fields:
 
 - `target_kind`
 - `target_id`
+- `text_hash`
 - `parent_paragraph_id`
 - `parent_table_id`
 - `row_index`
@@ -733,6 +776,7 @@ Fields:
 
 - `node_id`
 - `text`
+- `text_hash`
 - `start`
 - `end`
 - `native_anchor`
@@ -744,13 +788,15 @@ Fields:
 
 Use `TextEdit` for exact text replacements, `StructuralEdit` for
 insert/remove/table operations, and `StyleEdit` for flattened style mutations.
-Pass them through `validate_document_edits` and `apply_document_edits` with
-flattened keyword arguments:
+Call `apply_document_edits(dry_run=True)` to validate and preview an edit batch
+without native output, then call `apply_document_edits(...)` after any caller-side
+review. Use `validate_document_edits(...)` when validation-only output is useful.
 
 ```python
 result = apply_document_edits(
     document=document,
     edits=[TextEdit(...), StructuralEdit(...), StyleEdit(...)],
+    dry_run=True,
     return_doc_ir=True,
 )
 ```
