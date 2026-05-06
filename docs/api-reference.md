@@ -21,7 +21,9 @@ from document_processor import (
     TextAnnotation,
     TextEdit,
     apply_document_edits,
+    configure_logging,
     get_document_context,
+    get_logger,
     list_editable_targets,
     read_document,
     render_review_html,
@@ -32,6 +34,31 @@ from document_processor import (
 
 The package root also exports the IR models, style models, result DTOs, target
 kind aliases, diagram helpers, and `build_doc_ir_from_mapping`.
+
+## Logging
+
+The package root initializes a logger named `document_processor` with level
+`WARNING` and console output.
+
+#### `configure_logging(level=logging.WARNING, *, log_file=None, console=True, file_mode="a", log_format=..., date_format=..., propagate=False) -> logging.Logger`
+
+Configure the package-wide logger used by `DocIR` and helpers.
+
+- `level`: numeric or string level such as `"INFO"` or `"DEBUG"`.
+- `log_file`: optional file path. When set, logs are also written to that file.
+- `console`: keep or remove the managed console handler.
+- `propagate`: set to `True` when an application wants root logging handlers to
+  process `document_processor` records.
+
+Repeated calls update the managed handlers instead of adding duplicates.
+
+#### `get_logger(name=None) -> logging.Logger`
+
+Return the package logger or a child logger. Use `get_logger(__name__)` in
+package functions and helper modules instead of `print()`.
+
+`DocIR.configure_logging(...)` is a convenience wrapper around
+`configure_logging(...)`.
 
 ## Core IR Models
 

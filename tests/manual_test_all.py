@@ -2,9 +2,12 @@ import json
 from os import listdir
 from pathlib import Path
 
-from document_processor import DocIR
+from document_processor import DocIR, configure_logging, get_logger
 from pydantic import BaseModel
 
+
+configure_logging(level="INFO")
+logger = get_logger(__name__)
 
 doc_dir = Path("doc_samples/new_test")
 out_dir = Path("results")
@@ -13,7 +16,7 @@ files = [doc_dir / file for file in listdir(doc_dir)]
 
 
 for file_ in files:
-    print(f"processing {file_}...", end="")
+    logger.info("Processing %s", file_)
     doc = DocIR.from_file(file_)
 
     # == Add metadata == #
@@ -39,4 +42,4 @@ for file_ in files:
         json.dump(doc.model_dump(mode="json"), json_f, indent=4, ensure_ascii=False)
         html_f.write(doc.to_html())
 
-    print("completed.")
+    logger.info("Completed %s", file_)

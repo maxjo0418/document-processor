@@ -61,6 +61,40 @@ with open("/path/to/contract.docx", "rb") as handle:
 print(doc.paragraphs[0].text)
 ```
 
+## Logging
+
+The package logger is `document_processor`. It is initialized automatically with
+level `WARNING` and a console handler. Enable more detail or file output once at
+application startup:
+
+```python
+from document_processor import DocIR, configure_logging, get_logger
+
+configure_logging(level="INFO")
+configure_logging(level="DEBUG", log_file="logs/document-processor.log")
+
+doc = DocIR.from_file("/path/to/contract.docx")
+
+logger = get_logger(__name__)
+logger.info("Loaded %d paragraphs", len(doc.paragraphs))
+```
+
+Inside package helpers, use child loggers instead of `print()`:
+
+```python
+from document_processor import get_logger
+
+logger = get_logger(__name__)
+
+
+def helper() -> None:
+    logger.debug("Detailed helper state")
+    logger.warning("Recoverable issue")
+```
+
+`DocIR.configure_logging(...)` is an equivalent convenience wrapper around
+`configure_logging(...)`.
+
 ## 2. Build A Synthetic `DocIR`
 
 This is useful for tests, prototyping, and examples.

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..logging_config import get_logger
 from ..models import DocIR, PageInfo
 from .config import PdfParseConfig
 from .enhancement.image_fallback import replace_low_resolution_pdf_image_assets
@@ -12,6 +13,8 @@ from .odl import build_doc_ir_from_odl_result, preprocess_dotted_rule_splits, ru
 from .parsing import PageClass, PdfProfile, decide_page, probe_pdf
 from .preview.context import build_pdf_preview_context, collect_pdfium_visual_block_candidates
 from .preview.models import PdfPreviewContext
+
+logger = get_logger(__name__)
 
 
 def parse_pdf_to_doc_ir(
@@ -51,6 +54,13 @@ def _parse_pdf_to_doc_ir_with_preview(
     profile = probe_pdf(source_path)
     if profile is None:
         raise RuntimeError("PDF probe failed before ODL parsing.")
+    logger.debug(
+        "PDF probe profile for %s: page_count=%d text_readable=%s readable_page_ratio=%.3f",
+        source_path,
+        profile.page_count,
+        profile.text_readable,
+        profile.text_readable_page_ratio,
+    )
 
     selected_pages = _selected_pages(resolved_config.pages, page_count=profile.page_count)
     page_decisions = [decide_page(page_profile) for page_profile in profile.page_profiles]
@@ -64,6 +74,7 @@ def _parse_pdf_to_doc_ir_with_preview(
     resolved_doc_cls = doc_cls or DocIR
     preview_context = PdfPreviewContext()
     if structured_pages:
+        logger.info("Parsing %d structured PDF page(s) from %s", len(structured_pages), source_path)
         raw_document = run_odl_json(
             source_path,
             resolved_config.to_odl_config(pages=structured_pages, for_doc_ir=True),
@@ -90,6 +101,7 @@ def _parse_pdf_to_doc_ir_with_preview(
             **doc_kwargs,
         )
     else:
+        logger.info("No structured PDF pages selected for %s; returning empty DocIR", source_path)
         resolved_doc_id = doc_id or source_path.stem
         doc_ir = resolved_doc_cls(
             doc_id=resolved_doc_id,

@@ -22,12 +22,16 @@ from document_processor import (  # noqa: E402
     TextAnnotation,
     TextEdit,
     apply_document_edits,
+    configure_logging,
+    get_logger,
     list_editable_targets,
     render_review_html,
     validate_document_edits,
     validate_text_annotations,
 )
 
+
+logger = get_logger(__name__)
 
 TARGET_KIND_PRIORITY = {
     "run": 0,
@@ -1310,6 +1314,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    configure_logging(level="INFO")
     args = parse_args()
     summary = run_manual_file_flow(
         source_path=args.source_path,
@@ -1334,58 +1339,58 @@ def main() -> int:
         structural_cell_text=args.structural_cell_text,
     )
 
-    print("Manual file flow completed.")
-    print("Source file is left unchanged; inspect the generated output paths below.")
-    print(f"Source: {summary['source']['path']}")
-    print(f"Comprehensive edited output: {summary['paths']['comprehensive_output']}")
-    print(f"Comprehensive bytes output: {summary['paths']['comprehensive_bytes_output']}")
-    print(f"Comprehensive HTML: {summary['paths']['comprehensive_html']}")
-    print(f"Comprehensive bytes HTML: {summary['paths']['comprehensive_bytes_html']}")
+    logger.info("Manual file flow completed.")
+    logger.info("Source file is left unchanged; inspect the generated output paths below.")
+    logger.info("Source: %s", summary["source"]["path"])
+    logger.info("Comprehensive edited output: %s", summary["paths"]["comprehensive_output"])
+    logger.info("Comprehensive bytes output: %s", summary["paths"]["comprehensive_bytes_output"])
+    logger.info("Comprehensive HTML: %s", summary["paths"]["comprehensive_html"])
+    logger.info("Comprehensive bytes HTML: %s", summary["paths"]["comprehensive_bytes_html"])
     if summary["style_edit_suite"]["skipped"]:
-        print(f"Style edit suite skipped: {summary['style_edit_suite']['reason']}")
+        logger.info("Style edit suite skipped: %s", summary["style_edit_suite"]["reason"])
     else:
-        print(f"Style edited output: {summary['paths']['style_output']}")
-        print(f"Style bytes output: {summary['paths']['style_bytes_output']}")
-        print(f"Style HTML: {summary['paths']['style_html']}")
-        print(f"Style bytes HTML: {summary['paths']['style_bytes_html']}")
-    print(f"Comprehensive review HTML full: {summary['paths']['comprehensive_review_html_full']}")
-    print(f"Comprehensive review HTML selected: {summary['paths']['comprehensive_review_html_selected']}")
-    print(f"Comprehensive bytes review HTML full: {summary['paths']['comprehensive_bytes_review_html_full']}")
-    print(
-        "Comprehensive bytes review HTML selected: "
-        f"{summary['paths']['comprehensive_bytes_review_html_selected']}"
+        logger.info("Style edited output: %s", summary["paths"]["style_output"])
+        logger.info("Style bytes output: %s", summary["paths"]["style_bytes_output"])
+        logger.info("Style HTML: %s", summary["paths"]["style_html"])
+        logger.info("Style bytes HTML: %s", summary["paths"]["style_bytes_html"])
+    logger.info("Comprehensive review HTML full: %s", summary["paths"]["comprehensive_review_html_full"])
+    logger.info("Comprehensive review HTML selected: %s", summary["paths"]["comprehensive_review_html_selected"])
+    logger.info("Comprehensive bytes review HTML full: %s", summary["paths"]["comprehensive_bytes_review_html_full"])
+    logger.info(
+        "Comprehensive bytes review HTML selected: %s",
+        summary["paths"]["comprehensive_bytes_review_html_selected"],
     )
-    print(f"Summary JSON: {summary['paths']['summary_json']}")
-    print(
-        "Initial edit target: "
-        f"{summary['selected_targets']['edit']['target_kind']} "
-        f"{summary['selected_targets']['edit']['target_id']}"
+    logger.info("Summary JSON: %s", summary["paths"]["summary_json"])
+    logger.info(
+        "Initial edit target: %s %s",
+        summary["selected_targets"]["edit"]["target_kind"],
+        summary["selected_targets"]["edit"]["target_id"],
     )
-    print(f"Initial annotation target: {summary['selected_targets']['initial_annotation']['target_id']}")
-    print(
-        "Comprehensive modified target ids: "
-        f"{', '.join(summary['comprehensive_edit_suite']['native_file']['modified_target_ids'])}"
+    logger.info("Initial annotation target: %s", summary["selected_targets"]["initial_annotation"]["target_id"])
+    logger.info(
+        "Comprehensive modified target ids: %s",
+        ", ".join(summary["comprehensive_edit_suite"]["native_file"]["modified_target_ids"]),
     )
     if not summary["style_edit_suite"]["skipped"]:
-        print(
-            "Style modified target ids: "
-            f"{', '.join(summary['style_edit_suite']['native_file']['modified_target_ids'])}"
+        logger.info(
+            "Style modified target ids: %s",
+            ", ".join(summary["style_edit_suite"]["native_file"]["modified_target_ids"]),
         )
-        print(
-            "Style edits applied: "
-            f"{summary['style_edit_suite']['native_file']['styles_applied']}"
+        logger.info(
+            "Style edits applied: %s",
+            summary["style_edit_suite"]["native_file"]["styles_applied"],
         )
-    print(
+    logger.info(
         "Suite: mixed text+structural comprehensive edit path, style edit path, native/bytes exports, "
         "HTML exports, and post-edit annotation exports"
     )
     warnings = summary["comprehensive_edit_suite"]["native_file"]["warnings"]
     if warnings:
-        print(f"Warnings: {'; '.join(warnings)}")
+        logger.warning("Warnings: %s", "; ".join(warnings))
     if not summary["style_edit_suite"]["skipped"]:
         style_warnings = summary["style_edit_suite"]["native_file"]["warnings"]
         if style_warnings:
-            print(f"Style warnings: {'; '.join(style_warnings)}")
+            logger.warning("Style warnings: %s", "; ".join(style_warnings))
     return 0
 
 

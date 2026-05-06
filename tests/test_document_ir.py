@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import logging
 from pathlib import Path
 import sys
 import tempfile
@@ -31,6 +32,8 @@ from document_processor import (
     TableIR,
     TableStyleInfo,
     build_doc_ir_from_mapping,
+    configure_logging,
+    get_logger,
     read_document,
 )
 from document_processor.core.hwpx_structured_exporter import export_hwpx_structured_mapping
@@ -86,6 +89,31 @@ class DocumentIRTests(unittest.TestCase):
         doc = DocumentLM.from_mapping({"s1.p1.r1": "X"}, custom_field=7)
         self.assertIsInstance(doc, DocumentLM)
         self.assertEqual(doc.custom_field, 7)
+
+    def test_docir_logging_defaults_and_file_output(self) -> None:
+        logger = configure_logging()
+        self.assertEqual(logger.level, logging.WARNING)
+        self.assertEqual(get_logger().name, "document_processor")
+        self.assertEqual(get_logger("helpers").name, "document_processor.helpers")
+        self.assertTrue(any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "docir.log"
+            try:
+                configured_logger = DocIR.configure_logging(
+                    level="INFO",
+                    log_file=log_path,
+                    console=False,
+                )
+                DocIR.from_mapping({"s1.p1.r1": "Logged"})
+                for handler in configured_logger.handlers:
+                    handler.flush()
+
+                log_text = log_path.read_text(encoding="utf-8")
+                self.assertIn("Building DocIR from mapping with 1 run(s)", log_text)
+                self.assertIn("Built DocIR from mapping", log_text)
+            finally:
+                configure_logging()
 
     def test_content_is_source_of_truth(self) -> None:
         doc = DocIR(paragraphs=[

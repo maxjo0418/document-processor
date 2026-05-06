@@ -11,11 +11,13 @@ from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar
 from pydantic import BaseModel, Field, computed_field
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
+from .logging_config import configure_logging, get_logger
 from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 
 T = TypeVar("T", bound=BaseModel)
 NodeKind: TypeAlias = Literal["paragraph", "run", "image", "table", "cell"]
 SemanticBlockKind: TypeAlias = Literal["paragraph", "table", "image"]
+logger = get_logger(__name__)
 
 
 _NODE_ID_PREFIXES: dict[NodeKind, str] = {
@@ -320,6 +322,27 @@ class TableIR(BaseModel, Generic[T]):
         return _render_table_markdown(self)
 
 
+def _source_log_label(source: object) -> str:
+    source_name = get_source_name(source)
+    if source_name is not None:
+        return source_name
+    if isinstance(source, bytes):
+        return f"<bytes:{len(source)}>"
+    return f"<{type(source).__name__}>"
+
+
+def _log_doc_ir_summary(message: str, doc_ir: "DocIR") -> None:
+    logger.info(
+        "%s: source_doc_type=%s source_path=%s paragraphs=%d pages=%d assets=%d",
+        message,
+        doc_ir.source_doc_type,
+        doc_ir.source_path,
+        len(doc_ir.paragraphs),
+        len(doc_ir.pages),
+        len(doc_ir.assets),
+    )
+
+
 class DocIR(BaseModel, Generic[T]):
     """Top-level structural document IR."""
 
@@ -335,6 +358,17 @@ class DocIR(BaseModel, Generic[T]):
 
     def model_post_init(self, __context: Any) -> None:
         self.ensure_node_identity()
+
+    @classmethod
+    def configure_logging(
+        cls,
+        level: int | str = "WARNING",
+        *,
+        log_file: str | Path | None = None,
+        console: bool = True,
+    ):
+        """Configure the package logger used by DocIR and helper modules."""
+        return configure_logging(level, log_file=log_file, console=console)
 
     @computed_field
     @property
@@ -468,9 +502,11 @@ class DocIR(BaseModel, Generic[T]):
         resolved_doc_type = infer_doc_type(source, doc_type)  # type: ignore[arg-type]
         source_name = get_source_name(source)
         resolved_source_path = source_name
+        logger.info("Building DocIR from %s (doc_type=%s)", _source_log_label(source), resolved_doc_type)
 
         if resolved_doc_type == "pdf":
             with TemporarySourcePath(source, suffix=".pdf") as source_path:
+                logger.debug("Parsing PDF source at %s", source_path)
                 doc_ir = build_doc_ir_from_file(
                     source_path,
                     doc_type="pdf",
@@ -485,10 +521,13 @@ class DocIR(BaseModel, Generic[T]):
             doc_ir.source_doc_type = resolved_doc_type
             if resolved_source_path is not None:
                 doc_ir.source_path = resolved_source_path
-            return doc_ir.ensure_node_identity()
+            doc_ir.ensure_node_identity()
+            _log_doc_ir_summary("Built DocIR", doc_ir)
+            return doc_ir
 
         if resolved_doc_type == "hwp":
             with TemporarySourcePath(source, suffix=".hwp") as source_path:
+                logger.debug("Parsing HWP source at %s", source_path)
                 doc_ir = build_doc_ir_from_file(
                     source_path,
                     doc_type="hwp",
@@ -507,6 +546,7 @@ class DocIR(BaseModel, Generic[T]):
                 )
         else:
             supported_source = coerce_source_to_supported_value(source, doc_type=resolved_doc_type)
+            logger.debug("Parsing %s source through structured parser", resolved_doc_type)
             doc_ir = build_doc_ir_from_file(
                 supported_source,
                 doc_type=resolved_doc_type,
@@ -530,7 +570,9 @@ class DocIR(BaseModel, Generic[T]):
         doc_ir.source_doc_type = resolved_doc_type
         if resolved_source_path is not None:
             doc_ir.source_path = resolved_source_path
-        return doc_ir.ensure_node_identity()
+        doc_ir.ensure_node_identity()
+        _log_doc_ir_summary("Built DocIR", doc_ir)
+        return doc_ir
 
     @classmethod
     def from_mapping(
@@ -547,6 +589,7 @@ class DocIR(BaseModel, Generic[T]):
         """Build document IR from a run-level mapping."""
         from .builder import build_doc_ir_from_mapping
 
+        logger.info("Building DocIR from mapping with %d run(s)", len(mapping))
         doc_ir = build_doc_ir_from_mapping(
             mapping,
             style_map=style_map,
@@ -557,13 +600,16 @@ class DocIR(BaseModel, Generic[T]):
             doc_cls=cls,
             **doc_kwargs,
         )
-        return doc_ir.ensure_node_identity()
+        doc_ir.ensure_node_identity()
+        _log_doc_ir_summary("Built DocIR from mapping", doc_ir)
+        return doc_ir
 
     def to_html(self, *, title: str | None = None, debug_layout: bool = False) -> str:
         """Render this document IR as styled HTML."""
         from .render_prep import prepare_doc_ir_for_html
         from .html_exporter import render_html_document
 
+        logger.info("Rendering DocIR to HTML (debug_layout=%s)", debug_layout)
         prepare_doc_ir_for_html(self)
         return render_html_document(self, title=title, debug_layout=debug_layout)
 
