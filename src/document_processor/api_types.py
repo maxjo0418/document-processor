@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -45,9 +45,15 @@ AnnotationValidationCode = Literal[
     "target_not_found",
     "target_kind_mismatch",
     "mixed_content_not_supported",
+    "missing_bbox",
+    "missing_page_number",
     "selected_text_not_found",
     "selected_text_ambiguous",
     "occurrence_index_out_of_bounds",
+    "unsupported_source_doc_type",
+    "native_source_required",
+    "output_path_conflicts_with_source",
+    "invalid_operation",
 ]
 
 
@@ -308,6 +314,30 @@ class TextAnnotation(BaseModel):
         return self
 
 
+class DocAnnotation(BaseModel):
+    target_id: str = Field(description="DocIR node_id to annotate.")
+    note: str | None = Field(default=None, description="Optional annotation note text.")
+    color: str = Field(default="#FFF176", description="Default annotation color as #RRGGBB.")
+    selected_text: str | None = Field(
+        default=None,
+        description="Exact substring to highlight inside the target. Omit to annotate the full target location.",
+    )
+    occurrence_index: int | None = Field(
+        default=None,
+        ge=0,
+        description="Optional zero-based occurrence index when selected_text appears multiple times.",
+    )
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Opaque caller metadata.")
+
+    @model_validator(mode="after")
+    def _validate_selection(self) -> "DocAnnotation":
+        if self.selected_text == "":
+            raise ValueError("selected_text must not be empty.")
+        if self.selected_text is None and self.occurrence_index is not None:
+            raise ValueError("occurrence_index requires selected_text.")
+        return self
+
+
 class EditableTarget(BaseModel):
     target_kind: TargetKind
     target_id: str
@@ -397,6 +427,16 @@ class ReviewHtmlResult(BaseModel):
     validation: AnnotationValidationResult = Field(default_factory=AnnotationValidationResult)
 
 
+class ApplyPdfAnnotationsResult(BaseModel):
+    ok: bool = True
+    output_path: str | None = None
+    output_filename: str | None = None
+    output_bytes: bytes | None = None
+    annotations_applied: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    validation: AnnotationValidationResult = Field(default_factory=AnnotationValidationResult)
+
+
 class DocumentRunContext(BaseModel):
     node_id: str
     text: str
@@ -450,10 +490,12 @@ __all__ = [
     "AnnotationValidationCode",
     "AnnotationValidationIssue",
     "AnnotationValidationResult",
+    "ApplyPdfAnnotationsResult",
     "ApplyDocumentEditsResult",
     "DocumentContextResult",
     "DocumentEdit",
     "DocumentInput",
+    "DocAnnotation",
     "DocumentParagraphContext",
     "DocumentRunContext",
     "ReadDocumentResult",
@@ -461,6 +503,7 @@ __all__ = [
     "EditValidationCode",
     "EditValidationIssue",
     "EditValidationResult",
+    "InsertPosition",
     "ListEditableTargetsResult",
     "ResolvedTextAnnotation",
     "ReviewHtmlResult",
@@ -472,5 +515,4 @@ __all__ = [
     "TextEdit",
     "StructuralEdit",
     "StructuralOperationKind",
-    "InsertPosition",
 ]
