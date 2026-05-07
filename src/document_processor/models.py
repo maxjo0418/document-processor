@@ -7,6 +7,7 @@ from collections import OrderedDict
 import hashlib
 import json
 from pathlib import Path
+import time
 from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar
 
 from pydantic import BaseModel, Field, computed_field
@@ -457,15 +458,28 @@ def _source_log_label(source: object) -> str:
     return f"<{type(source).__name__}>"
 
 
-def _log_doc_ir_summary(message: str, doc_ir: "DocIR") -> None:
+def _log_doc_ir_summary(message: str, doc_ir: "DocIR", *, elapsed_s: float | None = None) -> None:
+    if elapsed_s is None:
+        logger.info(
+            "%s: source_doc_type=%s source_path=%s paragraphs=%d pages=%d assets=%d",
+            message,
+            doc_ir.source_doc_type,
+            doc_ir.source_path,
+            len(doc_ir.paragraphs),
+            len(doc_ir.pages),
+            len(doc_ir.assets),
+        )
+        return
+
     logger.info(
-        "%s: source_doc_type=%s source_path=%s paragraphs=%d pages=%d assets=%d",
+        "%s: source_doc_type=%s source_path=%s paragraphs=%d pages=%d assets=%d elapsed=%.1fs",
         message,
         doc_ir.source_doc_type,
         doc_ir.source_path,
         len(doc_ir.paragraphs),
         len(doc_ir.pages),
         len(doc_ir.assets),
+        elapsed_s,
     )
 
 
@@ -628,6 +642,7 @@ class DocIR(BaseModel, Generic[T]):
         resolved_doc_type = infer_doc_type(source, doc_type)  # type: ignore[arg-type]
         source_name = get_source_name(source)
         resolved_source_path = source_name
+        started_at = time.monotonic()
         logger.info("Building DocIR from %s (doc_type=%s)", _source_log_label(source), resolved_doc_type)
 
         if resolved_doc_type == "pdf":
@@ -648,7 +663,7 @@ class DocIR(BaseModel, Generic[T]):
             if resolved_source_path is not None:
                 doc_ir.source_path = resolved_source_path
             doc_ir.ensure_node_identity()
-            _log_doc_ir_summary("Built DocIR", doc_ir)
+            _log_doc_ir_summary("Built DocIR", doc_ir, elapsed_s=time.monotonic() - started_at)
             return doc_ir
 
         if resolved_doc_type == "hwp":
@@ -697,7 +712,7 @@ class DocIR(BaseModel, Generic[T]):
         if resolved_source_path is not None:
             doc_ir.source_path = resolved_source_path
         doc_ir.ensure_node_identity()
-        _log_doc_ir_summary("Built DocIR", doc_ir)
+        _log_doc_ir_summary("Built DocIR", doc_ir, elapsed_s=time.monotonic() - started_at)
         return doc_ir
 
     @classmethod

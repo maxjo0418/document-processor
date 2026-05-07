@@ -4,11 +4,13 @@ configure_logging()
 
 from .api import (
     apply_document_edits,
+    apply_pdf_annotations,
     get_document_context,
     list_editable_targets,
     read_document,
     render_review_html,
     validate_document_edits,
+    validate_pdf_annotations,
     validate_text_annotations,
 )
 from .api_types import (
@@ -18,9 +20,11 @@ from .api_types import (
     AnnotationValidationResult,
     AppliedEditResult,
     ApplyDocumentEditsResult,
+    ApplyPdfAnnotationsResult,
     DocumentContextResult,
     DocumentEdit,
     DocumentInput,
+    DocAnnotation,
     DocumentParagraphContext,
     DocumentRunContext,
     EditableTarget,
@@ -76,10 +80,12 @@ __all__ = [
     "AnnotationValidationResult",
     "AppliedEditResult",
     "ApplyDocumentEditsResult",
+    "ApplyPdfAnnotationsResult",
     "BoundingBox",
     "CellStyleInfo",
     "ColumnLayoutInfo",
     "DocIR",
+    "DocAnnotation",
     "DocumentContextResult",
     "DocumentEdit",
     "DocumentInput",
@@ -120,6 +126,7 @@ __all__ = [
     "TextAnnotation",
     "TextEdit",
     "apply_document_edits",
+    "apply_pdf_annotations",
     "build_doc_ir_from_mapping",
     "configure_logging",
     "create_model_diagram",
@@ -130,5 +137,6 @@ __all__ = [
     "read_document",
     "render_review_html",
     "validate_document_edits",
+    "validate_pdf_annotations",
     "validate_text_annotations",
 ]

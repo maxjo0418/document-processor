@@ -13,6 +13,8 @@ from .api_types import (
     AnnotationValidationResult,
     AppliedEditResult,
     ApplyDocumentEditsResult,
+    ApplyPdfAnnotationsResult,
+    DocAnnotation,
     DocumentContextResult,
     DocumentEdit,
     DocumentInput,
@@ -42,6 +44,7 @@ from .edit_engine import (
 )
 from .io_utils import SourceDocType, infer_doc_type
 from .models import DocIR, ImageIR, NativeAnchor, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id
+from .pdf.annotations import resolve_pdf_annotations_for_doc, write_pdf_annotations
 
 _WRITEBACK_SOURCE_TYPES = {"docx", "hwpx", "hwp"}
 _OUTPUT_FILENAME_SUFFIXES = {".docx", ".hwpx"}
@@ -411,6 +414,65 @@ def render_review_html(
     )
 
 
+def apply_pdf_annotations(
+    *,
+    document: DocumentInput | None = None,
+    source_path: str | None = None,
+    annotations: list[DocAnnotation],
+    output_path: str | None = None,
+    output_filename: str | None = None,
+) -> ApplyPdfAnnotationsResult:
+    resolved = _resolve_document_args(document=document, source_path=source_path)
+    validation = _validate_pdf_annotation_apply_request(
+        resolved,
+        annotations,
+        output_path=output_path,
+        output_filename=output_filename,
+    )
+    if not validation.ok:
+        return ApplyPdfAnnotationsResult(
+            ok=False,
+            validation=validation,
+        )
+
+    try:
+        result = write_pdf_annotations(
+            source_path=resolved.native_source_path,
+            source_bytes=resolved.native_source_bytes,
+            doc=resolved.doc,
+            annotations=annotations,
+            output_path=output_path,
+            output_filename=output_filename,
+        )
+    except ValueError as exc:
+        return ApplyPdfAnnotationsResult(
+            ok=False,
+            validation=AnnotationValidationResult(
+                ok=False,
+                issues=[AnnotationValidationIssue(code="invalid_operation", message=str(exc))],
+            ),
+        )
+
+    return ApplyPdfAnnotationsResult(
+        ok=True,
+        output_path=result.output_path,
+        output_filename=result.output_filename,
+        output_bytes=result.output_bytes,
+        annotations_applied=result.annotations_applied,
+        validation=validation,
+    )
+
+
+def validate_pdf_annotations(
+    *,
+    document: DocumentInput | None = None,
+    source_path: str | None = None,
+    annotations: list[DocAnnotation],
+) -> AnnotationValidationResult:
+    resolved = _resolve_document_args(document=document, source_path=source_path)
+    return _validate_pdf_annotations_for_doc(resolved.doc, annotations)
+
+
 def validate_text_annotations(
     *,
     document: DocumentInput | None = None,
@@ -692,6 +754,105 @@ def _resolve_style_edits_for_doc(
             continue
         resolved.append(_ResolvedStyleEdit(edit=resolved_edit, identity=identity))
     return resolved, issues
+
+
+def _validate_pdf_annotation_apply_request(
+    resolved: _ResolvedDocument,
+    annotations: list[DocAnnotation],
+    *,
+    output_path: str | None,
+    output_filename: str | None,
+) -> AnnotationValidationResult:
+    validation = _validate_pdf_annotations_for_doc(resolved.doc, annotations)
+    issues = list(validation.issues)
+
+    if resolved.source_doc_type != "pdf":
+        issues.append(
+            AnnotationValidationIssue(
+                code="unsupported_source_doc_type",
+                message=f"apply_pdf_annotations only supports PDF sources, got {resolved.source_doc_type!r}.",
+            )
+        )
+
+    if resolved.native_source_path is None and resolved.native_source_bytes is None:
+        issues.append(
+            AnnotationValidationIssue(
+                code="native_source_required",
+                message="apply_pdf_annotations requires source_path or source_bytes so annotations can be written back.",
+            )
+        )
+
+    issues.extend(_validate_pdf_annotation_output_options(output_path=output_path, output_filename=output_filename))
+
+    if resolved.native_source_path is not None:
+        source = Path(resolved.native_source_path)
+        requested = _requested_output_path_for_pdf_annotations(
+            source,
+            output_path=output_path,
+            output_filename=output_filename,
+        )
+        if _same_path(source, requested):
+            issues.append(
+                AnnotationValidationIssue(
+                    code="output_path_conflicts_with_source",
+                    message=(
+                        f"Output path would overwrite the source file: {requested}. "
+                        "Pick a different output_path or output_filename."
+                    ),
+                )
+            )
+
+    return AnnotationValidationResult(ok=not issues, issues=issues)
+
+
+def _requested_output_path_for_pdf_annotations(
+    source: Path,
+    *,
+    output_path: str | None,
+    output_filename: str | None,
+) -> Path:
+    if output_path is not None:
+        return Path(output_path)
+    if output_filename is not None:
+        return source.with_name(output_filename)
+    return source.with_name(f"{source.stem}_annotated.pdf")
+
+
+def _validate_pdf_annotation_output_options(
+    *,
+    output_path: str | None,
+    output_filename: str | None,
+) -> list[AnnotationValidationIssue]:
+    issues: list[AnnotationValidationIssue] = []
+    if output_path is not None and output_filename is not None:
+        issues.append(
+            AnnotationValidationIssue(
+                code="invalid_operation",
+                message="Specify either output_path or output_filename, not both.",
+            )
+        )
+    if output_filename is not None:
+        filename = output_filename.strip()
+        if not filename:
+            issues.append(AnnotationValidationIssue(code="invalid_operation", message="output_filename must not be empty."))
+        else:
+            pure = Path(filename)
+            if pure.is_absolute() or pure.name != filename or filename in {".", ".."}:
+                issues.append(
+                    AnnotationValidationIssue(
+                        code="invalid_operation",
+                        message="output_filename must be a filename only, without directory segments.",
+                    )
+                )
+    return issues
+
+
+def _validate_pdf_annotations_for_doc(
+    doc: DocIR,
+    annotations: list[DocAnnotation],
+) -> AnnotationValidationResult:
+    _resolved, issues = resolve_pdf_annotations_for_doc(doc, annotations)
+    return AnnotationValidationResult(ok=not issues, issues=issues)
 
 
 def _validate_document_apply_request(
@@ -1840,9 +2001,11 @@ __all__ = [
     "AnnotationValidationIssue",
     "AnnotationValidationResult",
     "ApplyDocumentEditsResult",
+    "ApplyPdfAnnotationsResult",
     "DocumentContextResult",
     "DocumentEdit",
     "DocumentInput",
+    "DocAnnotation",
     "DocumentParagraphContext",
     "DocumentRunContext",
     "EditableTarget",
@@ -1858,10 +2021,12 @@ __all__ = [
     "TextAnnotation",
     "TextEdit",
     "apply_document_edits",
+    "apply_pdf_annotations",
     "get_document_context",
     "list_editable_targets",
     "read_document",
     "render_review_html",
     "validate_document_edits",
+    "validate_pdf_annotations",
     "validate_text_annotations",
 ]

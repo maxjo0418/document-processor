@@ -254,8 +254,18 @@ def _node_restricted_to(
         if isinstance(items, list) and items:
             child_collections.append((key, items))
 
+    own_content = node.get("content")
+    own_bbox = coerce_bbox(node.get("bounding box")) or coerce_bbox(node.get("bbox"))
+    own_content_fits = (
+        node.get("type") == "list item"
+        and isinstance(own_content, str)
+        and bool(own_content)
+        and own_bbox is not None
+        and _bbox_enclosed_by(own_bbox, sub_bbox)
+    )
+
     if not child_collections:
-        node_bbox = coerce_bbox(node.get("bounding box"))
+        node_bbox = own_bbox
         if node_bbox is None:
             return dict(node)
         return dict(node) if _bbox_center_in(node_bbox, sub_bbox) else None
@@ -274,12 +284,14 @@ def _node_restricted_to(
                 new_items.append(item)
         new_node[key] = new_items
 
-    if not kept_any:
+    if not kept_any and not own_content_fits:
         return None
 
     # Rebuild bbox from surviving leaf descendants so parent cells can rely
     # on consistent bbox information post-pruning.
     leaf_bboxes = _collect_leaf_bboxes(new_node)
+    if own_content_fits and own_bbox is not None:
+        leaf_bboxes.append(own_bbox)
     if leaf_bboxes:
         new_node["bounding box"] = [
             min(b.left_pt for b in leaf_bboxes),
@@ -287,6 +299,16 @@ def _node_restricted_to(
             max(b.right_pt for b in leaf_bboxes),
             max(b.top_pt for b in leaf_bboxes),
         ]
+
+    if new_node.get("type") == "list item" and "content" in new_node:
+        parts: list[str] = []
+        if own_content_fits and isinstance(own_content, str) and own_content:
+            parts.append(own_content)
+        rebuilt_content = _text_from_restricted_children(new_node)
+        if rebuilt_content and rebuilt_content not in parts:
+            parts.append(rebuilt_content)
+        if parts:
+            new_node["content"] = "\n".join(parts)
 
     # For nodes that carry text as a concatenated ``content`` string (paragraph,
     # heading, …), rebuild it from the surviving direct leaf spans so the
@@ -311,6 +333,36 @@ def _node_restricted_to(
         new_node["number of list items"] = len(new_node["list items"])
 
     return new_node
+
+
+def _text_from_restricted_children(node: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("kids", "list items"):
+        items = node.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            text = _text_from_restricted_node(item)
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _text_from_restricted_node(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    node_type = node.get("type")
+    if node_type in {"paragraph", "heading", "caption", "formula"}:
+        content = node.get("content")
+        return content if isinstance(content, str) else ""
+    if node_type == "list item":
+        content = node.get("content")
+        if isinstance(content, str) and content:
+            return content
+        return _text_from_restricted_children(node)
+    if node_type in {"list", "header", "footer", "text block"}:
+        return _text_from_restricted_children(node)
+    return ""
 
 
 def _collect_leaf_bboxes(node: dict[str, Any]) -> list[PdfBoundingBox]:
@@ -352,4 +404,13 @@ def _bbox_center_in(bbox: PdfBoundingBox, sub_bbox: PdfBoundingBox) -> bool:
     return (
         sub_bbox.left_pt <= cx < sub_bbox.right_pt
         and sub_bbox.bottom_pt <= cy < sub_bbox.top_pt
+    )
+
+
+def _bbox_enclosed_by(bbox: PdfBoundingBox, sub_bbox: PdfBoundingBox) -> bool:
+    return (
+        sub_bbox.left_pt <= bbox.left_pt
+        and bbox.right_pt <= sub_bbox.right_pt
+        and sub_bbox.bottom_pt <= bbox.bottom_pt
+        and bbox.top_pt <= sub_bbox.top_pt
     )

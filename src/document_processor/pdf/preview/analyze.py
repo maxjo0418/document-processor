@@ -62,6 +62,36 @@ def _has_visible_stroke(primitive: PdfPreviewVisualPrimitive) -> bool:
     return True
 
 
+def _has_visible_fill(primitive: PdfPreviewVisualPrimitive) -> bool:
+    if not primitive.has_fill:
+        return False
+    if primitive.fill_color is None:
+        return False
+    rgba = primitive.fill_color.removeprefix("#")
+    if len(rgba) != 8:
+        return True
+    try:
+        red = int(rgba[0:2], 16)
+        green = int(rgba[2:4], 16)
+        blue = int(rgba[4:6], 16)
+        alpha = int(rgba[6:8], 16)
+    except ValueError:
+        return True
+    if alpha < 16:
+        return False
+    if red >= 245 and green >= 245 and blue >= 245:
+        return False
+    return True
+
+
+def _primitive_rule_color(primitive: PdfPreviewVisualPrimitive) -> str | None:
+    if _has_visible_stroke(primitive):
+        return primitive.stroke_color
+    if _has_visible_fill(primitive):
+        return primitive.fill_color
+    return None
+
+
 def _primitive_size(primitive: PdfPreviewVisualPrimitive) -> tuple[float, float]:
     bbox = primitive.bounding_box
     return (
@@ -85,6 +115,24 @@ def _primitive_bbox_line_orientation(
     if width <= narrow_width and height > width and height > min_length_pt:
         return "vertical"
     if height <= narrow_height and width > height and width > min_length_pt:
+        return "horizontal"
+    return None
+
+
+def _filled_thin_rect_line_orientation(
+    primitive: PdfPreviewVisualPrimitive,
+) -> str | None:
+    if primitive.object_type != "path" or not primitive.is_axis_aligned_box:
+        return None
+    if not _has_visible_fill(primitive):
+        return None
+    width, height = _primitive_size(primitive)
+    if width <= 0.0 or height <= 0.0:
+        return None
+    max_thickness = 3.0
+    if width <= max_thickness and height > _VISUAL_MIN_LINE_SEGMENT_PT and height > width * 3:
+        return "vertical"
+    if height <= max_thickness and width > _VISUAL_MIN_LINE_SEGMENT_PT and width > height * 3:
         return "horizontal"
     return None
 
@@ -331,6 +379,7 @@ def _extract_pdfium_visual_primitives(
     page,  # noqa: ANN001
     *,
     page_number: int,
+    include_fill_only_rules: bool = False,
     raw_module=None,  # noqa: ANN001
 ) -> list[PdfPreviewVisualPrimitive]:
     raw = raw_module
@@ -375,6 +424,7 @@ def _extract_pdfium_visual_primitives(
         primitives,
         page_width=page_width,
         page_height=page_height,
+        include_fill_only_rules=include_fill_only_rules,
     )
     primitives.extend(segmented_primitives)
     primitives.extend(_build_axis_box_edge_primitives(primitives))
@@ -383,12 +433,20 @@ def _extract_pdfium_visual_primitives(
             primitive,
             page_width=page_width,
             page_height=page_height,
+            include_fill_only_rules=include_fill_only_rules,
         )
 
     return [
         primitive
         for primitive in primitives
-        if primitive.candidate_roles and not (primitive.object_type == "path" and primitive.is_axis_aligned_box)
+        if primitive.candidate_roles
+        and (
+            not (primitive.object_type == "path" and primitive.is_axis_aligned_box)
+            or (
+                include_fill_only_rules
+                and _filled_thin_rect_line_orientation(primitive) is not None
+            )
+        )
     ]
 
 
@@ -403,6 +461,7 @@ def extract_pdfium_table_rule_primitives(
     primitives = _extract_pdfium_visual_primitives(
         page,
         page_number=page_number,
+        include_fill_only_rules=True,
         raw_module=raw_module,
     )
     return [
@@ -419,10 +478,12 @@ def _build_segmented_rule_primitives(
     *,
     page_width: float,
     page_height: float,
+    include_fill_only_rules: bool = False,
 ) -> list[PdfPreviewVisualPrimitive]:
     buckets: dict[tuple[int, str, str, int], list[PdfPreviewVisualPrimitive]] = {}
     for primitive in primitives:
-        if not _has_visible_stroke(primitive):
+        rule_color = _primitive_rule_color(primitive)
+        if rule_color is None:
             continue
         orientation = _primitive_bbox_line_orientation(
             primitive,
@@ -430,6 +491,8 @@ def _build_segmented_rule_primitives(
             page_height=page_height,
             min_length_pt=0.0,
         )
+        if orientation is None and include_fill_only_rules:
+            orientation = _filled_thin_rect_line_orientation(primitive)
         if orientation is None:
             continue
         line_span = _primitive_line_span(primitive, orientation)
@@ -439,7 +502,7 @@ def _build_segmented_rule_primitives(
         bucket_key = (
             primitive.page_number,
             orientation,
-            primitive.stroke_color or "",
+            rule_color,
             round(axis_value / _VISUAL_SEGMENTED_AXIS_TOLERANCE_PT),
         )
         buckets.setdefault(bucket_key, []).append(primitive)
@@ -577,7 +640,7 @@ def _segmented_rule_can_extend(
 ) -> bool:
     if left.page_number != right.page_number:
         return False
-    if left.stroke_color != right.stroke_color:
+    if _primitive_rule_color(left) != _primitive_rule_color(right):
         return False
     if orientation == "horizontal":
         left_axis = (left.bounding_box.top_pt + left.bounding_box.bottom_pt) / 2.0
@@ -738,12 +801,18 @@ def _candidate_roles_for_visual_primitive(
     *,
     page_width: float,
     page_height: float,
+    include_fill_only_rules: bool = False,
 ) -> list[str]:
     roles: list[str] = []
     width, height = _primitive_size(primitive)
     if width <= 0.0 or height <= 0.0:
         return roles
     has_visible_stroke = _has_visible_stroke(primitive)
+    filled_rect_orientation = (
+        _filled_thin_rect_line_orientation(primitive)
+        if include_fill_only_rules
+        else None
+    )
     is_segmented_horizontal = primitive.object_type == "segmented_horizontal_rule"
     is_segmented_vertical = primitive.object_type == "segmented_vertical_rule"
 
@@ -751,13 +820,13 @@ def _candidate_roles_for_visual_primitive(
     narrow_height = max(page_height * 0.03, 10.0)
 
     is_vertical_segment = is_segmented_vertical or (
-        has_visible_stroke
+        (has_visible_stroke or filled_rect_orientation == "vertical")
         and width <= narrow_width
         and height > width
         and height > _VISUAL_MIN_LINE_SEGMENT_PT
     )
     is_horizontal_segment = is_segmented_horizontal or (
-        has_visible_stroke
+        (has_visible_stroke or filled_rect_orientation == "horizontal")
         and height <= narrow_height
         and width > height
         and width > _VISUAL_MIN_LINE_SEGMENT_PT
@@ -772,10 +841,16 @@ def _candidate_roles_for_visual_primitive(
         roles.append("segmented_horizontal_rule")
 
     is_long_vertical_rule = (
-        not is_segmented_vertical and has_visible_stroke and height >= page_height * 0.70 and width <= narrow_width
+        not is_segmented_vertical
+        and (has_visible_stroke or filled_rect_orientation == "vertical")
+        and height >= page_height * 0.70
+        and width <= narrow_width
     )
     is_long_horizontal_rule = (
-        not is_segmented_horizontal and has_visible_stroke and width >= page_width * 0.70 and height <= narrow_height
+        not is_segmented_horizontal
+        and (has_visible_stroke or filled_rect_orientation == "horizontal")
+        and width >= page_width * 0.70
+        and height <= narrow_height
     )
     if is_long_vertical_rule:
         roles.append("long_vertical_rule")
