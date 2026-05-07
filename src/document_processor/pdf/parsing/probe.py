@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import logging
 from pathlib import Path
 import re
+
+from ...logging_config import get_logger
 
 NORMAL_TEXT_MIN_RATIO = 0.5
 SCANNED_MAX_CHARS = 20
@@ -18,7 +19,7 @@ GIBBERISH_NORMAL_TEXT_MAX_RATIO = 0.1
 
 _HANGUL_RANGE = re.compile(r"[\uAC00-\uD7AF\u3131-\u318E]")
 _LATIN_RANGE = re.compile(r"[A-Za-z0-9]")
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)

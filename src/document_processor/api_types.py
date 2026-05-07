@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
@@ -29,7 +30,7 @@ InsertPosition = Literal["before", "after", "start", "end"]
 EditValidationCode = Literal[
     "target_not_found",
     "target_kind_mismatch",
-    "text_mismatch",
+    "text_hash_mismatch",
     "mixed_content_not_supported",
     "paragraph_count_mismatch",
     "invalid_operation",
@@ -60,7 +61,7 @@ AnnotationValidationCode = Literal[
 class DocumentInput(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
-    source_path: str | None = Field(default=None, description="Filesystem path to the source document.")
+    source_path: str | Path | None = Field(default=None, description="Filesystem path to the source document.")
     source_bytes: bytes | None = Field(default=None, description="Raw document bytes for stateless upload-style calls.")
     doc_ir: DocIR | None = Field(default=None, description="Pre-parsed DocIR for read/in-memory edit flows.")
     source_doc_type: SourceDocType = Field(
@@ -87,16 +88,25 @@ class DocumentInput(BaseModel):
 
 
 class TextEdit(BaseModel):
+    model_config = {"extra": "forbid"}
+
     edit_type: Literal["text"] = Field(default="text", description="Discriminator for mixed edit batches.")
-    target_kind: TextTargetKind = Field(description="Whether this edit targets a paragraph, run, or table cell.")
+    client_edit_id: str | None = Field(default=None, description="Optional caller-provided id for correlating edit results.")
+    target_kind: TextTargetKind | None = Field(
+        default=None,
+        description="Optional compatibility assertion. When omitted, target kind is inferred from target_id.",
+    )
     target_id: str = Field(description="Stable opaque node id from the parsed document.")
-    expected_text: str = Field(description="Exact current text that must match before the edit is applied.")
+    expected_text_hash: str = Field(description="Hash of the exact current text that must match before the edit is applied.")
     new_text: str = Field(description="Replacement text for the target.")
     reason: str = Field(default="", description="Short rationale for the change.")
 
 
 class StructuralEdit(BaseModel):
+    model_config = {"extra": "forbid"}
+
     edit_type: Literal["structural"] = Field(default="structural", description="Discriminator for mixed edit batches.")
+    client_edit_id: str | None = Field(default=None, description="Optional caller-provided id for correlating edit results.")
     operation: StructuralOperationKind = Field(description="Structural edit operation to apply.")
     target_id: str = Field(description="Stable node_id used as the operation anchor.")
     position: InsertPosition = Field(
@@ -106,9 +116,9 @@ class StructuralEdit(BaseModel):
             "run operations can use before/after for run targets or start/end for paragraph targets."
         ),
     )
-    expected_text: str | None = Field(
+    expected_text_hash: str | None = Field(
         default=None,
-        description="Optional current text guard for remove and set operations.",
+        description="Optional current text hash guard for remove and set operations.",
     )
     text: str | None = Field(
         default=None,
@@ -206,7 +216,11 @@ class StyleEdit(BaseModel):
     model_config = {"extra": "forbid"}
 
     edit_type: Literal["style"] = Field(default="style", description="Discriminator for mixed edit batches.")
-    target_kind: StyleTargetKind = Field(description="Whether this style edit targets a paragraph, run, cell, table, or image.")
+    client_edit_id: str | None = Field(default=None, description="Optional caller-provided id for correlating edit results.")
+    target_kind: StyleTargetKind | None = Field(
+        default=None,
+        description="Optional compatibility assertion. When omitted, target kind is inferred from target_id.",
+    )
     target_id: str = Field(description="Stable opaque node id from the parsed document.")
     reason: str = Field(default="", description="Short rationale for the change.")
 
@@ -265,7 +279,6 @@ class StyleEdit(BaseModel):
 
     @model_validator(mode="after")
     def _validate_style_fields(self) -> "StyleEdit":
-        allowed = _STYLE_FIELDS_BY_TARGET_KIND[self.target_kind]
         style_fields = set().union(*_STYLE_FIELDS_BY_TARGET_KIND.values())
         supplied = {
             name
@@ -276,9 +289,11 @@ class StyleEdit(BaseModel):
         unknown_clear_fields = clear_fields - style_fields
         if unknown_clear_fields:
             raise ValueError(f"clear_fields contains unknown style fields: {sorted(unknown_clear_fields)}.")
-        illegal = (supplied | clear_fields) - allowed
-        if illegal:
-            raise ValueError(f"{self.target_kind} style edits do not support fields: {sorted(illegal)}.")
+        if self.target_kind is not None:
+            allowed = _STYLE_FIELDS_BY_TARGET_KIND[self.target_kind]
+            illegal = (supplied | clear_fields) - allowed
+            if illegal:
+                raise ValueError(f"{self.target_kind} style edits do not support fields: {sorted(illegal)}.")
         if not supplied and not clear_fields:
             raise ValueError("StyleEdit must set or clear at least one style field.")
         if self.superscript and self.subscript:
@@ -350,6 +365,7 @@ class EditableTarget(BaseModel):
     rowspan: int | None = Field(default=None, description="Cell row span for cell targets.")
     colspan: int | None = Field(default=None, description="Cell column span for cell targets.")
     current_text: str
+    text_hash: str | None = None
     page_number: int | None = None
     native_anchor: NativeAnchor | None = None
     writable: bool = True
@@ -362,13 +378,33 @@ class EditValidationIssue(BaseModel):
     target_id: str | None = None
     operation: StructuralOperationKind | None = None
     message: str
-    expected_text: str | None = None
+    expected_text_hash: str | None = None
+    current_text_hash: str | None = None
     current_text: str | None = None
 
 
 class EditValidationResult(BaseModel):
     ok: bool = True
     issues: list[EditValidationIssue] = Field(default_factory=list)
+
+
+class AppliedEditResult(BaseModel):
+    edit_index: int
+    client_edit_id: str | None = None
+    edit_type: Literal["text", "structural", "style"]
+    ok: bool = True
+    target_id: str | None = None
+    target_kind: TargetKind | None = None
+    operation: StructuralOperationKind | None = None
+    edits_applied: int = 0
+    operations_applied: int = 0
+    styles_applied: int = 0
+    modified_target_ids: list[str] = Field(default_factory=list)
+    created_target_ids: list[str] = Field(default_factory=list)
+    removed_target_ids: list[str] = Field(default_factory=list)
+    modified_run_ids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    validation_issue: EditValidationIssue | None = None
 
 
 class ApplyDocumentEditsResult(BaseModel):
@@ -388,6 +424,7 @@ class ApplyDocumentEditsResult(BaseModel):
     created_target_ids: list[str] = Field(default_factory=list)
     removed_target_ids: list[str] = Field(default_factory=list)
     modified_run_ids: list[str] = Field(default_factory=list)
+    edit_results: list[AppliedEditResult] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     validation: EditValidationResult = Field(default_factory=EditValidationResult)
 
@@ -440,6 +477,7 @@ class ApplyPdfAnnotationsResult(BaseModel):
 class DocumentRunContext(BaseModel):
     node_id: str
     text: str
+    text_hash: str | None = None
     start: int = Field(default=0, description="Start offset of this run in the containing paragraph text.")
     end: int = Field(default=0, description="End offset of this run in the containing paragraph text.")
     native_anchor: NativeAnchor | None = None
@@ -448,6 +486,7 @@ class DocumentRunContext(BaseModel):
 class DocumentParagraphContext(BaseModel):
     node_id: str
     text: str
+    text_hash: str | None = None
     display_text: str = ""
     page_number: int | None = None
     list_info: ListItemInfo | None = None
@@ -491,6 +530,7 @@ __all__ = [
     "AnnotationValidationIssue",
     "AnnotationValidationResult",
     "ApplyPdfAnnotationsResult",
+    "AppliedEditResult",
     "ApplyDocumentEditsResult",
     "DocumentContextResult",
     "DocumentEdit",

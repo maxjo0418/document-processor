@@ -111,7 +111,7 @@ class PdfTableWarningTests(unittest.TestCase):
         warning = warnings[0]
         self.assertEqual(1, warning.page_number)
         self.assertEqual(
-            "possible_table_mismatch - open-border table may have inaccurate cells",
+            "possible_table_mismatch - open-border/gradient-like table may have missing vertical grid lines",
             warning.message,
         )
 
@@ -140,7 +140,7 @@ class PdfTableWarningTests(unittest.TestCase):
         warning = warnings[0]
         self.assertEqual(8, warning.page_number)
         self.assertEqual(
-            "possible_table_mismatch - open-border table may have inaccurate cells",
+            "possible_table_mismatch - open-border/gradient-like table may have missing vertical grid lines",
             warning.message,
         )
 

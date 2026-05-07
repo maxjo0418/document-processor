@@ -923,7 +923,7 @@ def _hwpx_cell_style(
     border_fill_map: dict[str, ET.Element],
     table_cell_padding_defaults: dict[str, float] | None = None,
 ) -> CellStyleInfo:
-    info = CellStyleInfo()
+    info = CellStyleInfo(vertical_align="center")
 
     span_el = cell_el.find(f"{_HP}cellSpan")
     if span_el is not None:
@@ -933,16 +933,7 @@ def _hwpx_cell_style(
     sub_list = cell_el.find(f"{_HP}subList")
     if sub_list is not None:
         valign = sub_list.get("vertAlign", "")
-        info.vertical_align = _HWPX_VALIGN.get(valign)
-
-    cell_paragraphs = _iter_cell_paragraphs(cell_el)
-    if cell_paragraphs:
-        first_para = cell_paragraphs[0]
-        pp_ref = first_para.get("paraPrIDRef")
-        if pp_ref and pp_ref in para_pr_map:
-            pstyle = _hwpx_para_style_from_pr(para_pr_map[pp_ref])
-            if pstyle and pstyle.align:
-                info.horizontal_align = pstyle.align
+        info.vertical_align = _HWPX_VALIGN.get(valign) or info.vertical_align
 
     bf_ref = cell_el.get("borderFillIDRef")
     if bf_ref and bf_ref in border_fill_map:
@@ -1623,7 +1614,7 @@ def _docx_cell_style(
 ) -> CellStyleInfo:
     from docx.oxml.ns import qn
 
-    info = CellStyleInfo()
+    info = CellStyleInfo(vertical_align="center")
     tc = cell._tc
     tc_pr = tc.find(qn("w:tcPr"))
     if tc_pr is None:
@@ -1639,12 +1630,7 @@ def _docx_cell_style(
     v_align = tc_pr.find(qn("w:vAlign"))
     if v_align is not None:
         val = v_align.get(qn("w:val"), "")
-        info.vertical_align = {"top": "top", "center": "center", "bottom": "bottom"}.get(val)
-
-    if cell.paragraphs:
-        pstyle = _docx_para_style(cell.paragraphs[0])
-        if pstyle is not None and pstyle.align is not None:
-            info.horizontal_align = pstyle.align
+        info.vertical_align = {"top": "top", "center": "center", "bottom": "bottom"}.get(val) or info.vertical_align
 
     tc_width = tc_pr.find(qn("w:tcW"))
     if tc_width is not None:
@@ -1913,7 +1899,7 @@ def _collect_style_map_from_doc_ir(doc_ir) -> StyleMap:
     def collect_table(table) -> None:
         if table.table_style is not None:
             style_map.tables[_node_debug_path(table)] = table.table_style.model_copy(deep=True)
-        for cell in table.cells:
+        for cell in table.iter_cells():
             if cell.cell_style is not None:
                 style_map.cells[_node_debug_path(cell)] = cell.cell_style.model_copy(deep=True)
             for paragraph in cell.paragraphs:

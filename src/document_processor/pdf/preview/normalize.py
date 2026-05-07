@@ -707,7 +707,7 @@ def _build_layout_table_paragraph_for_group(
     if len(x_boundaries) < 2 or len(y_boundaries) < 2:
         return None
 
-    cells: list[TableCellIR] = []
+    cells: list[tuple[int, int, TableCellIR]] = []
     for candidate_index, assigned_candidate in enumerate(assigned_candidates, start=1):
         bbox = assigned_candidate.candidate.bounding_box
         left_index = _nearest_boundary_index(x_boundaries, bbox.left_pt)
@@ -719,8 +719,6 @@ def _build_layout_table_paragraph_for_group(
         rowspan = max(bottom_index - top_index, 1)
         cell = TableCellIR(
             **_pdf_node_kwargs("cell", f"pdf-preview.p{page_number}.layout-table.{group_index}.cell.{candidate_index}"),
-            row_index=top_index + 1,
-            col_index=left_index + 1,
             bbox=bbox,
             cell_style=_layout_table_cell_style(
                 bbox,
@@ -730,7 +728,7 @@ def _build_layout_table_paragraph_for_group(
             paragraphs=_assigned_candidate_cell_paragraphs(assigned_candidate),
         )
         cell.recompute_text()
-        cells.append(cell)
+        cells.append((top_index + 1, left_index + 1, cell))
 
     table_path = f"pdf-preview.p{page_number}.layout-table.{group_index}"
     table = TableIR(
@@ -746,8 +744,9 @@ def _build_layout_table_paragraph_for_group(
             # 전체 grid를 켜면 빈 filler cell에도 선이 생겨 PDF보다 지저분해진다.
             render_grid=False,
         ),
-        cells=cells,
     )
+    for row_index, col_index, cell in cells:
+        table.append_cell(cell, row_index=row_index, col_index=col_index)
     paragraph = ParagraphIR(
         **_pdf_node_kwargs("paragraph", f"{table_path}.paragraph"),
         text="",
@@ -943,7 +942,7 @@ def _rebase_bboxes(node: Any, *, origin: PdfBoundingBox) -> None:
         for child in node.content:
             _rebase_bboxes(child, origin=origin)
     elif isinstance(node, TableIR):
-        for cell in node.cells:
+        for cell in node.iter_cells():
             _rebase_bboxes(cell, origin=origin)
     elif isinstance(node, TableCellIR):
         for paragraph in node.paragraphs:
@@ -1208,8 +1207,6 @@ def _layout_row_paragraph(
 
         cell = TableCellIR(
             **_pdf_node_kwargs("cell", f"pdf-preview.p{page_number}.layout-row.{row_index}.cell.{index}"),
-            row_index=1,
-            col_index=index,
             bbox=bbox,
             cell_style=CellStyleInfo(
                 width_pt=width_pt,
@@ -1235,7 +1232,7 @@ def _layout_row_paragraph(
             height_pt=_bbox_height(row_bbox),
             render_grid=False,
         ),
-        cells=cells,
+        cells=[cells],
     )
     seed_layout = _paragraph_column_layout(ordered[0])
     paragraph = ParagraphIR(
@@ -1320,7 +1317,7 @@ def _cell_content_bbox(cell: TableCellIR) -> PdfBoundingBox | None:
 
 
 def _apply_table_cell_bbox_style_hints(table: TableIR) -> None:
-    for cell in table.cells:
+    for cell in table.iter_cells():
         if cell.bbox is None:
             continue
         content_bbox = _cell_content_bbox(cell)
@@ -1391,7 +1388,7 @@ def _apply_paragraph_bbox_style_hints(
 
 
 def _apply_table_tree_bbox_style_hints(table: TableIR) -> None:
-    for cell in table.cells:
+    for cell in table.iter_cells():
         container_bbox = cell.bbox or table.bbox
         if container_bbox is None:
             continue
@@ -1583,7 +1580,7 @@ def _apply_table_context(table, table_context: PdfPreviewTableContext) -> None:
         if table.table_style.height_pt is None and table_context.grid_row_boundaries:
             table.table_style.height_pt = _span_extent(table_context.grid_row_boundaries, 1, table.row_count)
 
-    for cell in table.cells:
+    for row_index, col_index, cell in table.iter_cell_positions():
         if cell.cell_style is None:
             cell.cell_style = CellStyleInfo()
 
@@ -1591,11 +1588,11 @@ def _apply_table_context(table, table_context: PdfPreviewTableContext) -> None:
         rowspan = max(cell.cell_style.rowspan, 1)
 
         if cell.cell_style.width_pt is None and table_context.grid_column_boundaries:
-            width_pt = _span_extent(table_context.grid_column_boundaries, cell.col_index, colspan)
+            width_pt = _span_extent(table_context.grid_column_boundaries, col_index, colspan)
             if width_pt is not None:
                 cell.cell_style.width_pt = width_pt
         if cell.cell_style.height_pt is None and table_context.grid_row_boundaries:
-            height_pt = _span_extent(table_context.grid_row_boundaries, cell.row_index, rowspan)
+            height_pt = _span_extent(table_context.grid_row_boundaries, row_index, rowspan)
             if height_pt is not None:
                 cell.cell_style.height_pt = height_pt
 

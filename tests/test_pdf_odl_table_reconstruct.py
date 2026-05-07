@@ -728,6 +728,91 @@ class DottedRuleSplitTests(unittest.TestCase):
         self.assertEqual(cells_by_pos[(1, 3)]["paragraphs"][0]["content"], "C top")
         self.assertEqual(cells_by_pos[(2, 3)]["paragraphs"][0]["content"], "C bottom")
 
+    def test_vertical_segment_endpoints_split_existing_row_gap_in_merged_cell(self) -> None:
+        table = {
+            "type": "table",
+            "page number": 1,
+            "bounding box": [10.0, 10.0, 130.0, 90.0],
+            "number of rows": 2,
+            "number of columns": 2,
+            "grid row boundaries": [90.0, 50.0, 10.0],
+            "grid column boundaries": [10.0, 50.0, 130.0],
+            "rows": [
+                {
+                    "type": "table row",
+                    "row number": 1,
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 1,
+                            "row span": 2,
+                            "column span": 1,
+                            "bounding box": [10.0, 10.0, 50.0, 90.0],
+                            "kids": [
+                                _paragraph("Left top", left=15.0, bottom=62.0, right=45.0, top=72.0),
+                                _paragraph("Left bottom", left=15.0, bottom=28.0, right=45.0, top=38.0),
+                            ],
+                            "paragraphs": [
+                                _paragraph("Left top", left=15.0, bottom=62.0, right=45.0, top=72.0),
+                                _paragraph("Left bottom", left=15.0, bottom=28.0, right=45.0, top=38.0),
+                            ],
+                        },
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 2,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [50.0, 50.0, 130.0, 90.0],
+                            "kids": [_paragraph("Right top", left=55.0, bottom=62.0, right=125.0, top=72.0)],
+                            "paragraphs": [_paragraph("Right top", left=55.0, bottom=62.0, right=125.0, top=72.0)],
+                        },
+                    ],
+                },
+                {
+                    "type": "table row",
+                    "row number": 2,
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 2,
+                            "column number": 2,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [50.0, 10.0, 130.0, 50.0],
+                            "kids": [_paragraph("Right bottom", left=55.0, bottom=28.0, right=125.0, top=38.0)],
+                            "paragraphs": [_paragraph("Right bottom", left=55.0, bottom=28.0, right=125.0, top=38.0)],
+                        },
+                    ],
+                },
+            ],
+        }
+        vertical_segments = []
+        for x in (10.0, 50.0, 130.0):
+            vertical_segments.append(_vertical_line_segment(x=x, bottom=50.0, top=90.0))
+            vertical_segments.append(_vertical_line_segment(x=x, bottom=10.0, top=50.0))
+
+        _apply_dotted_splits(
+            table,
+            dotted_h=[],
+            dotted_v=[],
+            vertical_rule_segments=vertical_segments,
+        )
+
+        cells_by_pos = {
+            (c["row number"], c["column number"]): c
+            for row in table["rows"] for c in row["cells"]
+        }
+        self.assertEqual(table["number of rows"], 2)
+        self.assertEqual(cells_by_pos[(1, 1)]["row span"], 1)
+        self.assertEqual(cells_by_pos[(2, 1)]["row span"], 1)
+        self.assertEqual(cells_by_pos[(1, 1)]["paragraphs"][0]["content"], "Left top")
+        self.assertEqual(cells_by_pos[(2, 1)]["paragraphs"][0]["content"], "Left bottom")
+
     def test_vertical_segment_endpoint_crossing_text_is_ignored(self) -> None:
         raw_cells = _collect_cells_for_test(
             _single_cell_table(
@@ -890,7 +975,7 @@ class DottedRuleSplitAdapterIntegrationTests(unittest.TestCase):
         table_ir = odl_adapter._table_node_to_ir(table, unit_id="u", assets={})
         self.assertEqual(table_ir.row_count, 2)
         self.assertEqual(table_ir.col_count, 1)
-        cells_by_row = {cell.row_index: cell for cell in table_ir.cells}
+        cells_by_row = {row_index: cell for row_index, _col_index, cell in table_ir.iter_cell_positions()}
         self.assertEqual(cells_by_row[1].text.strip(), "Top")
         self.assertEqual(cells_by_row[2].text.strip(), "Bottom")
 

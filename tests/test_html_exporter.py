@@ -81,8 +81,8 @@ class HtmlExporterTests(unittest.TestCase):
                 ParagraphIR(content=[
                         TableIR(table_style=TableStyleInfo(width_pt=240.0),
                             cells=[
-                                TableCellIR(row_index=1,
-                                    col_index=1,
+                                [
+                                    TableCellIR(
                                     cell_style=CellStyleInfo(background="#ffeeaa",
                                         horizontal_align="center",
                                         width_pt=120.0,
@@ -97,14 +97,16 @@ class HtmlExporterTests(unittest.TestCase):
                                         ParagraphIR(content=[RunIR(text="A1")],
                                         )
                                     ],
-                                ),
-                                TableCellIR(row_index=2,
-                                    col_index=1,
+                                    ),
+                                ],
+                                [
+                                    TableCellIR(
                                     paragraphs=[
                                         ParagraphIR(content=[RunIR(text="B1")],
                                         )
                                     ],
-                                ),
+                                    ),
+                                ],
                             ],
                         )
                     ],
@@ -127,28 +129,67 @@ class HtmlExporterTests(unittest.TestCase):
         self.assertIn("margin-left:0", html)
         self.assertIn("margin-right:auto", html)
 
+    def test_export_html_prioritizes_native_cell_alignment_over_cell_paragraph_alignment(self) -> None:
+        doc = DocIR(source_doc_type="docx",
+            paragraphs=[
+                ParagraphIR(content=[
+                        TableIR(cells=[
+                                [
+                                    TableCellIR(
+                                    cell_style=CellStyleInfo(horizontal_align="left", vertical_align="center"),
+                                    paragraphs=[
+                                        ParagraphIR(para_style=ParaStyleInfo(align="right"),
+                                            content=[RunIR(text="Explicit cell alignment")],
+                                        )
+                                    ],
+                                    ),
+                                ],
+                                [
+                                    TableCellIR(
+                                    paragraphs=[
+                                        ParagraphIR(para_style=ParaStyleInfo(align="center"),
+                                            content=[RunIR(text="Default cell alignment")],
+                                        )
+                                    ],
+                                    ),
+                                ],
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        for rendered in (doc.to_html(), _render_review_html_for_doc(doc)):
+            self.assertIn("Explicit cell alignment", rendered)
+            self.assertIn("Default cell alignment", rendered)
+            self.assertIn("vertical-align:middle", rendered)
+            self.assertIn("text-align:left", rendered)
+            self.assertIn("text-align:center", rendered)
+            self.assertNotIn("text-align:right", rendered)
+
     def test_export_html_emits_fixed_columns_for_spanned_cell_widths(self) -> None:
         doc = DocIR(paragraphs=[
                 ParagraphIR(content=[
                         TableIR(col_count=3,
                             table_style=TableStyleInfo(width_pt=120.0, col_count=3),
                             cells=[
-                                TableCellIR(row_index=1,
-                                    col_index=1,
+                                [
+                                    TableCellIR(
                                     cell_style=CellStyleInfo(width_pt=30.0, vertical_align="center"),
                                     paragraphs=[
                                         ParagraphIR(content=[RunIR(text="Label")],
                                         )
                                     ],
-                                ),
-                                TableCellIR(row_index=1,
-                                    col_index=2,
+                                    ),
+                                    TableCellIR(
                                     cell_style=CellStyleInfo(width_pt=90.0, colspan=2),
                                     paragraphs=[
                                         ParagraphIR(content=[RunIR(text="Value")],
                                         )
                                     ],
-                                ),
+                                    ),
+                                ],
                             ],
                         )
                     ],
@@ -175,8 +216,8 @@ class HtmlExporterTests(unittest.TestCase):
         doc = DocIR(paragraphs=[
                 ParagraphIR(content=[
                         TableIR(cells=[
-                                TableCellIR(row_index=1,
-                                    col_index=1,
+                                [
+                                    TableCellIR(
                                     cell_style=CellStyleInfo(padding_top_pt=1.4,
                                         padding_right_pt=5.1,
                                         padding_bottom_pt=1.4,
@@ -186,7 +227,8 @@ class HtmlExporterTests(unittest.TestCase):
                                         ParagraphIR(content=[RunIR(text="Padded")],
                                         )
                                     ],
-                                )
+                                    )
+                                ]
                             ],
                         )
                     ],
@@ -205,8 +247,8 @@ class HtmlExporterTests(unittest.TestCase):
         doc = DocIR(paragraphs=[
                 ParagraphIR(content=[
                         TableIR(cells=[
-                                TableCellIR(row_index=1,
-                                    col_index=1,
+                                [
+                                    TableCellIR(
                                     cell_style=CellStyleInfo(diagonal_tl_br="1px solid #000000",
                                         diagonal_tr_bl="1px dashed #ff0000",
                                         border_top="1px solid #000000",
@@ -218,7 +260,8 @@ class HtmlExporterTests(unittest.TestCase):
                                         ParagraphIR(content=[RunIR(text="Diag")],
                                         )
                                     ],
-                                )
+                                    )
+                                ]
                             ],
                         )
                     ],
@@ -237,13 +280,14 @@ class HtmlExporterTests(unittest.TestCase):
                 ParagraphIR(para_style=ParaStyleInfo(align="justify"),
                     content=[
                         TableIR(cells=[
-                                TableCellIR(row_index=1,
-                                    col_index=1,
+                                [
+                                    TableCellIR(
                                     paragraphs=[
                                         ParagraphIR(content=[RunIR(text="Cell")],
                                         )
                                     ],
-                                )
+                                    )
+                                ]
                             ],
                         )
                     ],
@@ -268,28 +312,26 @@ class HtmlExporterTests(unittest.TestCase):
                             **_pdf_node_kwargs("table", "s1.p1.r1.tbl1"),
                             table_style=TableStyleInfo(render_grid=True),
                             cells=[
-                                TableCellIR(
+                                [
+                                    TableCellIR(
                                     **_pdf_node_kwargs("cell", "s1.p1.r1.tbl1.tr1.tc1"),
-                                    row_index=1,
-                                    col_index=1,
                                     paragraphs=[
                                         ParagraphIR(
                                             **_pdf_node_kwargs("paragraph", "s1.p1.r1.tbl1.tr1.tc1.p1"),
                                             content=[RunIR(**_pdf_node_kwargs("run", "x"), text="A1")],
                                         )
                                     ],
-                                ),
-                                TableCellIR(
+                                    ),
+                                    TableCellIR(
                                     **_pdf_node_kwargs("cell", "s1.p1.r1.tbl1.tr1.tc2"),
-                                    row_index=1,
-                                    col_index=2,
                                     paragraphs=[
                                         ParagraphIR(
                                             **_pdf_node_kwargs("paragraph", "s1.p1.r1.tbl1.tr1.tc2.p1"),
                                             content=[RunIR(**_pdf_node_kwargs("run", "y"), text="B1")],
                                         )
                                     ],
-                                ),
+                                    ),
+                                ],
                             ],
                         )
                     ],
@@ -453,8 +495,8 @@ class HtmlExporterTests(unittest.TestCase):
         doc = DocIR(paragraphs=[
                 ParagraphIR(content=[
                         TableIR(cells=[
-                                TableCellIR(row_index=1,
-                                    col_index=1,
+                                [
+                                    TableCellIR(
                                     paragraphs=[
                                         ParagraphIR(para_style=ParaStyleInfo(align="center",
                                                 first_line_indent_pt=-159.3,
@@ -462,7 +504,8 @@ class HtmlExporterTests(unittest.TestCase):
                                             content=[RunIR(text="스토리")],
                                         )
                                     ],
-                                )
+                                    )
+                                ]
                             ],
                         )
                     ],
@@ -539,14 +582,15 @@ class HtmlExporterTests(unittest.TestCase):
                     content=[
                         TableIR(table_style=TableStyleInfo(width_pt=240.0),
                             cells=[
-                                TableCellIR(row_index=1,
-                                    col_index=1,
+                                [
+                                    TableCellIR(
                                     cell_style=CellStyleInfo(width_pt=120.0, height_pt=36.0),
                                     paragraphs=[
                                         ParagraphIR(content=[RunIR(text="A1")],
                                         )
                                     ],
-                                )
+                                    )
+                                ]
                             ],
                         )
                     ],
@@ -566,25 +610,27 @@ class HtmlExporterTests(unittest.TestCase):
         doc = DocIR(paragraphs=[
                 ParagraphIR(content=[
                         TableIR(cells=[
-                                TableCellIR(row_index=1,
-                                    col_index=1,
+                                [
+                                    TableCellIR(
                                     paragraphs=[
                                         ParagraphIR(content=[
                                                 RunIR(text="Outer"),
                                                 TableIR(cells=[
-                                                        TableCellIR(row_index=1,
-                                                            col_index=1,
+                                                        [
+                                                            TableCellIR(
                                                             paragraphs=[
                                                                 ParagraphIR(content=[RunIR(text="Inner")],
                                                                 )
                                                             ],
-                                                        )
+                                                            )
+                                                        ]
                                                     ],
                                                 )
                                             ],
                                         )
                                     ],
-                                )
+                                    )
+                                ]
                             ],
                         )
                     ],

@@ -158,7 +158,7 @@ class PdfPipelineTests(unittest.TestCase):
 
         doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
 
-        style = doc.paragraphs[0].tables[0].cells[0].cell_style
+        style = doc.paragraphs[0].tables[0].cells[0][0].cell_style
         self.assertEqual(style.border_top, "1.5px dotted #123456")
         self.assertEqual(style.border_bottom, "1px solid")
 
@@ -484,21 +484,21 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.paragraphs[2].text, "First item")
         self.assertIsNone(doc.paragraphs[2].meta)
         self.assertEqual(doc.paragraphs[3].native_anchor.debug_path, "s1.p4")
-        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].text, "A1")
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0][0].text, "A1")
         self.assertEqual(doc.paragraphs[3].bbox.left_pt, 200.0)
         self.assertEqual(doc.paragraphs[3].tables[0].native_anchor.debug_path, "s1.p4.r1.tbl1")
         self.assertEqual(doc.paragraphs[3].tables[0].bbox.left_pt, 200.0)
         self.assertIsNone(doc.paragraphs[3].tables[0].meta)
         self.assertTrue(doc.paragraphs[3].tables[0].table_style.render_grid)
-        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].native_anchor.debug_path, "s1.p4.r1.tbl1.tr1.tc1")
-        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].bbox.left_pt, 210.0)
-        self.assertIsNone(doc.paragraphs[3].tables[0].cells[0].meta)
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0][0].native_anchor.debug_path, "s1.p4.r1.tbl1.tr1.tc1")
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0][0].bbox.left_pt, 210.0)
+        self.assertIsNone(doc.paragraphs[3].tables[0].cells[0][0].meta)
         self.assertEqual(
-            doc.paragraphs[3].tables[0].cells[0].paragraphs[0].native_anchor.debug_path,
+            doc.paragraphs[3].tables[0].cells[0][0].paragraphs[0].native_anchor.debug_path,
             "s1.p4.r1.tbl1.tr1.tc1.p1",
         )
-        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].cell_style.border_top, "1px solid")
-        self.assertEqual(doc.paragraphs[3].tables[0].cells[0].cell_style.border_right, "1px solid")
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0][0].cell_style.border_top, "1px solid")
+        self.assertEqual(doc.paragraphs[3].tables[0].cells[0][0].cell_style.border_right, "1px solid")
         self.assertIn("odl-img-p5", doc.assets)
         self.assertEqual(doc.paragraphs[4].native_anchor.debug_path, "s1.p5")
         self.assertEqual(doc.paragraphs[4].images[0].native_anchor.debug_path, "s1.p5.img1")
@@ -578,8 +578,8 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertIsNone(doc.paragraphs[1].runs[0].meta)
         self.assertEqual(doc.paragraphs[1].runs[0].run_style.font_family, "Noto Sans KR")
         self.assertEqual(doc.paragraphs[1].runs[0].run_style.size_pt, 9.0)
-        self.assertEqual(doc.paragraphs[2].tables[0].cells[0].text, "  A1  ")
-        self.assertEqual(doc.paragraphs[2].tables[0].cells[0].paragraphs[0].text, "  A1  ")
+        self.assertEqual(doc.paragraphs[2].tables[0].cells[0][0].text, "  A1  ")
+        self.assertEqual(doc.paragraphs[2].tables[0].cells[0][0].paragraphs[0].text, "  A1  ")
 
     def test_build_doc_ir_from_odl_result_uses_additive_spans_for_multi_run_text(self) -> None:
         raw_document = {
@@ -678,17 +678,17 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertTrue(doc.paragraphs[0].runs[2].run_style.underline)
         self.assertIsNone(doc.paragraphs[0].runs[0].meta)
         self.assertEqual(doc.paragraphs[0].runs[0].bbox.left_pt, 1.0)
-        self.assertEqual(doc.paragraphs[1].tables[0].cells[0].text, "A1")
+        self.assertEqual(doc.paragraphs[1].tables[0].cells[0][0].text, "A1")
         self.assertEqual(
-            [run.text for run in doc.paragraphs[1].tables[0].cells[0].paragraphs[0].runs],
+            [run.text for run in doc.paragraphs[1].tables[0].cells[0][0].paragraphs[0].runs],
             ["A", "1"],
         )
         self.assertEqual(
-            doc.paragraphs[1].tables[0].cells[0].paragraphs[0].runs[0].run_style.font_family,
+            doc.paragraphs[1].tables[0].cells[0][0].paragraphs[0].runs[0].run_style.font_family,
             "Cell Span Font",
         )
         self.assertEqual(
-            doc.paragraphs[1].tables[0].cells[0].paragraphs[0].runs[1].run_style.font_family,
+            doc.paragraphs[1].tables[0].cells[0][0].paragraphs[0].runs[1].run_style.font_family,
             "Cell Font",
         )
 

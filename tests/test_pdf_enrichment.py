@@ -87,17 +87,17 @@ class PdfEnrichmentTests(unittest.TestCase):
                                 **_pdf_node_kwargs("table", "p1.tbl1"),
                                 table_style=TableStyleInfo(render_grid=True),
                                 cells=[
-                                    TableCellIR(
-                                        **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
-                                        row_index=1,
-                                        col_index=1,
-                                        bbox=PdfBoundingBox(
-                                            left_pt=10.0,
-                                            bottom_pt=10.0,
-                                            right_pt=30.0,
-                                            top_pt=30.0,
-                                        ),
-                                    )
+                                    [
+                                        TableCellIR(
+                                            **_pdf_node_kwargs("cell", "p1.tbl1.tr1.tc1"),
+                                            bbox=PdfBoundingBox(
+                                                left_pt=10.0,
+                                                bottom_pt=10.0,
+                                                right_pt=30.0,
+                                                top_pt=30.0,
+                                            ),
+                                        )
+                                    ]
                                 ],
                             )
                         ],
@@ -111,7 +111,7 @@ class PdfEnrichmentTests(unittest.TestCase):
             ):
                 enrich_pdf_table_backgrounds(doc, pdf_path=pdf_path, dpi=72)
 
-        cell_style = doc.paragraphs[0].tables[0].cells[0].cell_style
+        cell_style = doc.paragraphs[0].tables[0].cells[0][0].cell_style
         self.assertIsNotNone(cell_style)
         self.assertEqual(cell_style.background, "#dfe6f7")
 

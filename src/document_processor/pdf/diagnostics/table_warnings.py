@@ -45,7 +45,7 @@ _MESSAGES = {
         "possible_table_mismatch - adjacent tables may be one split table"
     ),
     "open_border_table_risk": (
-        "possible_table_mismatch - open-border table may have inaccurate cells"
+        "possible_table_mismatch - open-border/gradient-like table may have missing vertical grid lines"
     ),
 }
 
@@ -170,7 +170,7 @@ def detect_pdf_table_warnings(
 def log_pdf_table_warnings(warnings: list[PdfTableWarning], logger: Any) -> None:
     for warning in warnings:
         logger.warning(
-            "PDF table warning: %s source=%s page=%s bbox=%s",
+            "PDF table warning: %s | source=%s | page=%s | bbox=%s",
             warning.message,
             warning.source_path,
             warning.page_number,

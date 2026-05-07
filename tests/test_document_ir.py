@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import logging
 from pathlib import Path
 import sys
 import tempfile
@@ -31,6 +32,8 @@ from document_processor import (
     TableIR,
     TableStyleInfo,
     build_doc_ir_from_mapping,
+    configure_logging,
+    get_logger,
     read_document,
 )
 from document_processor.core.hwpx_structured_exporter import export_hwpx_structured_mapping
@@ -77,7 +80,7 @@ class DocumentIRTests(unittest.TestCase):
         doc_ir = build_doc_ir_from_mapping(self._sample_mapping(), style_map=self._sample_style_map())
         self.assertEqual(doc_ir.paragraphs[0].para_style.align, "center")
         self.assertTrue(doc_ir.paragraphs[0].runs[0].run_style.bold)
-        self.assertEqual(doc_ir.paragraphs[1].tables[0].cells[0].cell_style.background, "#ffeeaa")
+        self.assertEqual(doc_ir.paragraphs[1].tables[0].cells[0][0].cell_style.background, "#ffeeaa")
 
     def test_docir_subclass_from_mapping(self) -> None:
         class DocumentLM(DocIR):
@@ -86,6 +89,31 @@ class DocumentIRTests(unittest.TestCase):
         doc = DocumentLM.from_mapping({"s1.p1.r1": "X"}, custom_field=7)
         self.assertIsInstance(doc, DocumentLM)
         self.assertEqual(doc.custom_field, 7)
+
+    def test_docir_logging_defaults_and_file_output(self) -> None:
+        logger = configure_logging()
+        self.assertEqual(logger.level, logging.WARNING)
+        self.assertEqual(get_logger().name, "document_processor")
+        self.assertEqual(get_logger("helpers").name, "document_processor.helpers")
+        self.assertTrue(any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "docir.log"
+            try:
+                configured_logger = DocIR.configure_logging(
+                    level="INFO",
+                    log_file=log_path,
+                    console=False,
+                )
+                DocIR.from_mapping({"s1.p1.r1": "Logged"})
+                for handler in configured_logger.handlers:
+                    handler.flush()
+
+                log_text = log_path.read_text(encoding="utf-8")
+                self.assertIn("Building DocIR from mapping with 1 run(s)", log_text)
+                self.assertIn("Built DocIR from mapping", log_text)
+            finally:
+                configure_logging()
 
     def test_content_is_source_of_truth(self) -> None:
         doc = DocIR(paragraphs=[
@@ -592,7 +620,7 @@ class DocumentIRTests(unittest.TestCase):
         }
 
         doc = DocIR.from_mapping(mapping)
-        outer_cell_paragraph = doc.paragraphs[0].tables[0].cells[0].paragraphs[0]
+        outer_cell_paragraph = doc.paragraphs[0].tables[0].cells[0][0].paragraphs[0]
 
         self.assertEqual(outer_cell_paragraph.text, "Outer\nInner")
         self.assertEqual(len(outer_cell_paragraph.tables), 1)
@@ -601,30 +629,52 @@ class DocumentIRTests(unittest.TestCase):
             "s1.p1.r1.tbl1.tr1.tc1.p1.tbl1",
         )
         self.assertEqual(
-            outer_cell_paragraph.tables[0].cells[0].paragraphs[0].runs[0].text,
+            outer_cell_paragraph.tables[0].cells[0][0].paragraphs[0].runs[0].text,
             "Inner",
         )
 
     def test_table_markdown_repeats_merged_cells(self) -> None:
-        table = TableIR(cells=[
-                TableCellIR(row_index=1,
-                    col_index=1,
-                    cell_style=CellStyleInfo(rowspan=2, colspan=2),
-                    paragraphs=[ParagraphIR(content=[RunIR(text="Merged")])],
-                ),
-                TableCellIR(row_index=1,
-                    col_index=3,
-                    paragraphs=[ParagraphIR(content=[RunIR(text="Right")])],
-                ),
-                TableCellIR(row_index=2,
-                    col_index=3,
-                    paragraphs=[ParagraphIR(content=[RunIR(text="Bottom")])],
-                ),
+        table = TableIR(
+            cells=[
+                [
+                    TableCellIR(
+                        cell_style=CellStyleInfo(rowspan=2, colspan=2),
+                        paragraphs=[ParagraphIR(content=[RunIR(text="Merged")])],
+                    ),
+                    TableCellIR(paragraphs=[ParagraphIR(content=[RunIR(text="Right")])]),
+                ],
+                [TableCellIR(paragraphs=[ParagraphIR(content=[RunIR(text="Bottom")])])],
             ],
         )
 
         markdown = table.markdown
 
+        self.assertFalse(hasattr(table.cells[0][0], "row_index"))
+        self.assertEqual([len(row) for row in table.cells], [3, 3])
+        self.assertIs(table.cells[0][1], table.cells[0][0])
+        self.assertIs(table.cells[1][0], table.cells[0][0])
+        self.assertIs(table.cells[1][1], table.cells[0][0])
+        self.assertEqual(table.cells[0][2].paragraphs[0].content[0].text, "Right")
+        self.assertEqual(table.cells[1][2].paragraphs[0].content[0].text, "Bottom")
+        self.assertEqual(
+            [
+                (row_index, col_index, cell.paragraphs[0].content[0].text)
+                for row_index, col_index, cell in table.iter_cell_positions()
+            ],
+            [(1, 1, "Merged"), (1, 3, "Right"), (2, 3, "Bottom")],
+        )
+        round_tripped = TableIR.model_validate(table.model_dump(mode="python"))
+        self.assertEqual([len(row) for row in round_tripped.cells], [3, 3])
+        self.assertIs(round_tripped.cells[0][1], round_tripped.cells[0][0])
+        self.assertIs(round_tripped.cells[1][0], round_tripped.cells[0][0])
+        self.assertIs(round_tripped.cells[1][1], round_tripped.cells[0][0])
+        self.assertEqual(
+            [
+                (row_index, col_index, cell.paragraphs[0].content[0].text)
+                for row_index, col_index, cell in round_tripped.iter_cell_positions()
+            ],
+            [(1, 1, "Merged"), (1, 3, "Right"), (2, 3, "Bottom")],
+        )
         self.assertIn("| col1 | col2 | col3 |", markdown)
         self.assertIn("| Merged | Merged | Right |", markdown)
         self.assertIn("| Merged | Merged | Bottom |", markdown)
@@ -637,7 +687,7 @@ class DocumentIRTests(unittest.TestCase):
             }
         )
         outer = doc.paragraphs[0].tables[0]
-        nested_path = outer.cells[1].paragraphs[0].tables[0].native_anchor.debug_path
+        nested_path = outer.cells[0][1].paragraphs[0].tables[0].native_anchor.debug_path
 
         markdown = outer.markdown
 
@@ -661,11 +711,11 @@ class DocumentIRTests(unittest.TestCase):
 
             parsed = DocIR.from_file(docx_path)
 
-        outer_cell_paragraph = parsed.paragraphs[0].tables[0].cells[0].paragraphs[0]
+        outer_cell_paragraph = parsed.paragraphs[0].tables[0].cells[0][0].paragraphs[0]
         self.assertEqual(outer_cell_paragraph.runs[0].text, "Outer")
         self.assertEqual(len(outer_cell_paragraph.tables), 1)
         self.assertEqual(
-            outer_cell_paragraph.tables[0].cells[0].paragraphs[0].runs[0].text,
+            outer_cell_paragraph.tables[0].cells[0][0].paragraphs[0].runs[0].text,
             "Inner",
         )
 
@@ -715,7 +765,7 @@ class DocumentIRTests(unittest.TestCase):
             [("s1.p1.r1", "Before"), ("s1.p1.r3", "After")],
         )
         self.assertEqual(paragraph_ir.tables[0].native_anchor.debug_path, "s1.p1.r1.tbl1")
-        self.assertEqual(paragraph_ir.tables[0].cells[0].paragraphs[0].runs[0].text, "Cell")
+        self.assertEqual(paragraph_ir.tables[0].cells[0][0].paragraphs[0].runs[0].text, "Cell")
 
     def test_hwpx_nested_tables_are_parsed(self) -> None:
         hwpx_bytes_io = BytesIO()
@@ -766,11 +816,11 @@ class DocumentIRTests(unittest.TestCase):
 
         parsed = DocIR.from_file(hwpx_bytes_io.getvalue(), doc_type="hwpx")
 
-        outer_cell_paragraph = parsed.paragraphs[0].tables[0].cells[0].paragraphs[0]
+        outer_cell_paragraph = parsed.paragraphs[0].tables[0].cells[0][0].paragraphs[0]
         self.assertEqual(outer_cell_paragraph.runs[0].text, "Outer")
         self.assertEqual(len(outer_cell_paragraph.tables), 1)
         self.assertEqual(
-            outer_cell_paragraph.tables[0].cells[0].paragraphs[0].runs[0].text,
+            outer_cell_paragraph.tables[0].cells[0][0].paragraphs[0].runs[0].text,
             "Inner",
         )
 

@@ -41,7 +41,7 @@ def _rebuild_rows(
     if ny <= 0 or len(xs) < 2:
         return []
 
-    flat_cells: list[dict[str, Any]] = []
+    sub_cells: list[dict[str, Any]] = []
 
     for idx, cell in enumerate(original_cells):
         bbox = coerce_bbox(cell.get("bounding box"))
@@ -79,7 +79,7 @@ def _rebuild_rows(
                     x_split_borders=cell_x_split_borders.get(idx, {}),
                     y_split_borders=sub_rect_y_split_borders.get((idx, band_idx), {}),
                 )
-                flat_cells.append(
+                sub_cells.append(
                     _build_sub_cell(
                         source=cell,
                         sub_bbox=sub_bbox,
@@ -91,11 +91,11 @@ def _rebuild_rows(
                     )
                 )
 
-    if not flat_cells:
+    if not sub_cells:
         return []
 
     rows_by_number: dict[int, list[dict[str, Any]]] = {}
-    for sub_cell in flat_cells:
+    for sub_cell in sub_cells:
         rows_by_number.setdefault(sub_cell["row number"], []).append(sub_cell)
 
     new_rows: list[dict[str, Any]] = []

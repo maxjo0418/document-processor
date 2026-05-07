@@ -210,24 +210,27 @@ def _apply_dotted_splits(
         cell_x_splits=cell_x_splits,
         sub_rect_y_splits=sub_rect_y_splits,
     )
-    endpoint_y_splits = _vertical_endpoint_y_splits(
+    endpoint_splits = _vertical_endpoint_splits(
         table_bbox=table_bbox,
         raw_cells=raw_cells,
         provisional_ys=provisional_ys,
         provisional_xs=provisional_xs,
+        cell_x_bands=cell_x_bands,
+        sub_rect_y_splits=sub_rect_y_splits,
         vertical_rule_segments=vertical_rule_segments or [],
     )
-    if endpoint_y_splits:
-        _merge_endpoint_y_splits(
+    if endpoint_splits:
+        _merge_endpoint_splits(
             raw_cells=raw_cells,
             cell_x_bands=cell_x_bands,
             sub_rect_y_splits=sub_rect_y_splits,
-            endpoint_y_splits=endpoint_y_splits,
+            endpoint_splits=endpoint_splits,
         )
 
     all_x_splits = _collect_new_boundaries(cell_x_splits, existing=existing_xs)
     all_y_splits = _collect_new_y_boundaries(sub_rect_y_splits, existing=existing_ys)
-    if not all_y_splits and not all_x_splits:
+    has_local_y_splits = any(bool(ys) for ys in sub_rect_y_splits.values())
+    if not has_local_y_splits and not all_x_splits:
         return
 
     merged_ys = _dedupe_close(sorted(existing_ys + all_y_splits), _AXIS_MERGE_TOL_PT)
@@ -390,6 +393,96 @@ class _VirtualEndpointRow:
     y: float
     xs: list[float]
 
+    @property
+    def x_left(self) -> float:
+        return min(self.xs)
+
+    @property
+    def x_right(self) -> float:
+        return max(self.xs)
+
+
+@dataclass(frozen=True)
+class _EndpointSplit:
+    y: float
+    x_left: float
+    x_right: float
+
+
+def _vertical_endpoint_splits(
+    *,
+    table_bbox: PdfBoundingBox,
+    raw_cells: list[dict[str, Any]],
+    provisional_ys: list[float],
+    provisional_xs: list[float],
+    cell_x_bands: dict[int, list[tuple[float, float]]],
+    sub_rect_y_splits: dict[tuple[int, int], list[float]],
+    vertical_rule_segments: list[PdfPreviewVisualPrimitive],
+) -> list[_EndpointSplit]:
+    if not vertical_rule_segments or len(provisional_xs) < 2:
+        return []
+
+    text_bboxes = _collect_text_bboxes(raw_cells)
+    virtual_rows = _virtual_rows_from_endpoint_points(
+        _vertical_endpoint_points(
+            table_bbox=table_bbox,
+            vertical_rule_segments=vertical_rule_segments,
+            text_bboxes=text_bboxes,
+        )
+    )
+    if not virtual_rows:
+        return []
+
+    coverage_by_y = _horizontal_boundary_coverage(
+        raw_cells=raw_cells,
+        cell_x_bands=cell_x_bands,
+        sub_rect_y_splits=sub_rect_y_splits,
+    )
+    endpoint_splits: list[_EndpointSplit] = []
+    for row in virtual_rows:
+        row_interval = (
+            max(table_bbox.left_pt, row.x_left),
+            min(table_bbox.right_pt, row.x_right),
+        )
+        if row_interval[1] - row_interval[0] < _AXIS_MERGE_TOL_PT:
+            continue
+        covered = _coverage_at_y(row.y, coverage_by_y)
+        uncovered_ranges = _subtract_covered_ranges(row_interval, covered)
+        for x_left, x_right in uncovered_ranges:
+            if x_right - x_left < _AXIS_MERGE_TOL_PT:
+                continue
+            endpoint_splits.append(_EndpointSplit(y=row.y, x_left=x_left, x_right=x_right))
+
+    endpoint_splits = _dedupe_endpoint_splits(endpoint_splits)
+    if not endpoint_splits:
+        return []
+
+    new_candidate_ys = _dedupe_close(
+        sorted(
+            split.y
+            for split in endpoint_splits
+            if not any(abs(split.y - existing) <= _INTERIOR_PAD_PT for existing in provisional_ys)
+        ),
+        _AXIS_MERGE_TOL_PT,
+    )
+    new_candidate_ys = _filter_too_thin_row_splits(new_candidate_ys, provisional_ys)
+    endpoint_splits = [
+        split
+        for split in endpoint_splits
+        if any(abs(split.y - existing) <= _INTERIOR_PAD_PT for existing in provisional_ys)
+        or any(abs(split.y - kept) <= _AXIS_MERGE_TOL_PT for kept in new_candidate_ys)
+    ]
+    if not endpoint_splits:
+        return []
+
+    merged_ys = _dedupe_close(
+        sorted(provisional_ys + [split.y for split in endpoint_splits]),
+        _AXIS_MERGE_TOL_PT,
+    )
+    if not _row_bands_have_enough_text(merged_ys, text_bboxes, table_bbox):
+        return []
+    return endpoint_splits
+
 
 def _virtual_rows_from_endpoint_points(
     points: list[tuple[float, float]],
@@ -505,6 +598,121 @@ def _merge_endpoint_y_splits(
                 sorted(splits),
                 _AXIS_MERGE_TOL_PT,
             )
+
+
+def _merge_endpoint_splits(
+    *,
+    raw_cells: list[dict[str, Any]],
+    cell_x_bands: dict[int, list[tuple[float, float]]],
+    sub_rect_y_splits: dict[tuple[int, int], list[float]],
+    endpoint_splits: list[_EndpointSplit],
+) -> None:
+    for idx, cell in enumerate(raw_cells):
+        bbox = coerce_bbox(cell.get("bounding box"))
+        if bbox is None:
+            continue
+        for band_idx, (x_left, x_right) in enumerate(cell_x_bands.get(idx, [])):
+            splits = sub_rect_y_splits.setdefault((idx, band_idx), [])
+            for split in endpoint_splits:
+                if not (bbox.bottom_pt + _INTERIOR_PAD_PT < split.y < bbox.top_pt - _INTERIOR_PAD_PT):
+                    continue
+                overlap = _interval_overlap((x_left, x_right), (split.x_left, split.x_right))
+                band_width = max(x_right - x_left, 0.0)
+                if overlap < _AXIS_MERGE_TOL_PT or (band_width > 0 and overlap / band_width < 0.5):
+                    continue
+                splits.append(split.y)
+            sub_rect_y_splits[(idx, band_idx)] = _dedupe_close(
+                sorted(splits),
+                _AXIS_MERGE_TOL_PT,
+            )
+
+
+def _horizontal_boundary_coverage(
+    *,
+    raw_cells: list[dict[str, Any]],
+    cell_x_bands: dict[int, list[tuple[float, float]]],
+    sub_rect_y_splits: dict[tuple[int, int], list[float]],
+) -> dict[float, list[tuple[float, float]]]:
+    coverage: dict[float, list[tuple[float, float]]] = {}
+    for idx, cell in enumerate(raw_cells):
+        bbox = coerce_bbox(cell.get("bounding box"))
+        if bbox is None:
+            continue
+        for band_idx, (x_left, x_right) in enumerate(cell_x_bands.get(idx, [])):
+            for y in (bbox.bottom_pt, bbox.top_pt, *sub_rect_y_splits.get((idx, band_idx), [])):
+                bucket_y = _nearby_value(coverage, y) or y
+                coverage.setdefault(bucket_y, []).append((x_left, x_right))
+
+    return {
+        y: _merge_intervals(intervals)
+        for y, intervals in coverage.items()
+    }
+
+
+def _coverage_at_y(
+    y: float,
+    coverage_by_y: dict[float, list[tuple[float, float]]],
+) -> list[tuple[float, float]]:
+    for existing_y, intervals in coverage_by_y.items():
+        if abs(y - existing_y) <= _INTERIOR_PAD_PT:
+            return intervals
+    return []
+
+
+def _subtract_covered_ranges(
+    interval: tuple[float, float],
+    covered: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    uncovered = [interval]
+    for cover_left, cover_right in _merge_intervals(covered):
+        next_uncovered: list[tuple[float, float]] = []
+        for left, right in uncovered:
+            if cover_right <= left + _AXIS_MERGE_TOL_PT or cover_left >= right - _AXIS_MERGE_TOL_PT:
+                next_uncovered.append((left, right))
+                continue
+            if left < cover_left - _AXIS_MERGE_TOL_PT:
+                next_uncovered.append((left, min(cover_left, right)))
+            if cover_right < right - _AXIS_MERGE_TOL_PT:
+                next_uncovered.append((max(cover_right, left), right))
+        uncovered = next_uncovered
+    return uncovered
+
+
+def _merge_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    normalized = sorted(
+        (min(left, right), max(left, right))
+        for left, right in intervals
+        if abs(right - left) > _AXIS_MERGE_TOL_PT
+    )
+    merged: list[tuple[float, float]] = []
+    for left, right in normalized:
+        if not merged or left > merged[-1][1] + _AXIS_MERGE_TOL_PT:
+            merged.append((left, right))
+            continue
+        prev_left, prev_right = merged[-1]
+        merged[-1] = (prev_left, max(prev_right, right))
+    return merged
+
+
+def _dedupe_endpoint_splits(splits: list[_EndpointSplit]) -> list[_EndpointSplit]:
+    deduped: list[_EndpointSplit] = []
+    for split in sorted(splits, key=lambda item: (item.y, item.x_left, item.x_right)):
+        if any(
+            abs(split.y - existing.y) <= _AXIS_MERGE_TOL_PT
+            and abs(split.x_left - existing.x_left) <= _AXIS_MERGE_TOL_PT
+            and abs(split.x_right - existing.x_right) <= _AXIS_MERGE_TOL_PT
+            for existing in deduped
+        ):
+            continue
+        deduped.append(split)
+    return deduped
+
+
+def _interval_overlap(
+    left: tuple[float, float],
+    right: tuple[float, float],
+) -> float:
+    return max(0.0, min(left[1], right[1]) - max(left[0], right[0]))
 
 
 def _nearest_boundary_index(value: float, boundaries: list[float]) -> int | None:

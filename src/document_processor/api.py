@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
+
+from pydantic import ValidationError
 
 from .annotations import _Annotation, _render_annotated_html
 from .api_types import (
     AnnotationValidationIssue,
     AnnotationValidationResult,
+    AppliedEditResult,
     ApplyDocumentEditsResult,
     ApplyPdfAnnotationsResult,
     DocAnnotation,
@@ -43,6 +47,20 @@ from .models import DocIR, ImageIR, NativeAnchor, ParagraphIR, RunIR, TableCellI
 from .pdf.annotations import resolve_pdf_annotations_for_doc, write_pdf_annotations
 
 _WRITEBACK_SOURCE_TYPES = {"docx", "hwpx", "hwp"}
+_OUTPUT_FILENAME_SUFFIXES = {".docx", ".hwpx"}
+_TEXT_TARGET_KINDS = {"paragraph", "run", "cell"}
+
+
+def _text_hash(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _first_table_cell(table: TableIR) -> TableCellIR | None:
+    for cell in table.iter_cells():
+        return cell
+    return None
 
 
 @dataclass
@@ -99,7 +117,7 @@ class _ResolvedStyleEdit:
 def read_document(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     start: int = 0,
     limit: int = 50,
     include_runs: bool = True,
@@ -129,7 +147,7 @@ def read_document(
 def get_document_context(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     target_ids: list[str] | None = None,
     before: int = 1,
     after: int = 1,
@@ -151,11 +169,11 @@ def get_document_context(
         for cell in _iter_doc_ir_cells(resolved.doc.paragraphs)
         if cell.node_id is not None and cell.paragraphs and cell.paragraphs[0].node_id is not None
     }
-    table_to_anchor_paragraph = {
-        table.node_id: table.cells[0].paragraphs[0]
-        for table in _iter_doc_ir_tables(resolved.doc.paragraphs)
-        if table.node_id is not None and table.cells and table.cells[0].paragraphs
-    }
+    table_to_anchor_paragraph: dict[str, ParagraphIR] = {}
+    for table in _iter_doc_ir_tables(resolved.doc.paragraphs):
+        first_cell = _first_table_cell(table)
+        if table.node_id is not None and first_cell is not None and first_cell.paragraphs:
+            table_to_anchor_paragraph[table.node_id] = first_cell.paragraphs[0]
 
     selected_indices: set[int] = set()
     missing_target_ids: list[str] = []
@@ -199,7 +217,7 @@ def _iter_doc_ir_cells(paragraphs: list[ParagraphIR]):
 
 
 def _iter_doc_ir_table_cells(table: TableIR):
-    for cell in table.cells:
+    for cell in table.iter_cells():
         yield cell
         for paragraph in cell.paragraphs:
             for nested_table in paragraph.tables:
@@ -210,14 +228,14 @@ def _iter_doc_ir_tables(paragraphs: list[ParagraphIR]):
     for paragraph in paragraphs:
         for table in paragraph.tables:
             yield table
-            for cell in table.cells:
+            for cell in table.iter_cells():
                 yield from _iter_doc_ir_tables(cell.paragraphs)
 
 
 def list_editable_targets(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     target_ids: list[str] | None = None,
     target_kinds: list[TargetKind] | None = None,
     include_child_runs: bool = False,
@@ -263,7 +281,7 @@ def list_editable_targets(
 def validate_document_edits(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     edits: Sequence[DocumentEdit],
 ) -> EditValidationResult:
     resolved = _resolve_document_args(document=document, source_path=source_path)
@@ -277,7 +295,7 @@ def validate_document_edits(
 def apply_document_edits(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     edits: Sequence[DocumentEdit],
     dry_run: bool = False,
     output_path: str | None = None,
@@ -296,6 +314,7 @@ def apply_document_edits(
             ok=False,
             source_doc_type=resolved.source_doc_type,
             source_name=resolved.source_name,
+            edit_results=_edit_results_from_validation(edits, validation),
             validation=validation,
         )
 
@@ -319,6 +338,7 @@ def apply_document_edits(
                 created_target_ids=preview_result.created_target_ids,
                 removed_target_ids=preview_result.removed_target_ids,
                 modified_run_ids=preview_result.modified_run_ids,
+                edit_results=preview_result.edit_results,
                 warnings=preview_result.warnings,
                 validation=validation,
             )
@@ -335,14 +355,16 @@ def apply_document_edits(
         else:
             internal_result = preview_result
     except EditValidationError as exc:
+        validation = EditValidationResult(
+            ok=False,
+            issues=[_issue_from_edit_exception(exc)],
+        )
         return ApplyDocumentEditsResult(
             ok=False,
             source_doc_type=resolved.source_doc_type,
             source_name=resolved.source_name,
-            validation=EditValidationResult(
-                ok=False,
-                issues=[_issue_from_edit_exception(exc)],
-            ),
+            edit_results=_edit_results_from_validation(edits, validation),
+            validation=validation,
         )
 
     return ApplyDocumentEditsResult(
@@ -360,6 +382,7 @@ def apply_document_edits(
         created_target_ids=preview_result.created_target_ids,
         removed_target_ids=preview_result.removed_target_ids,
         modified_run_ids=preview_result.modified_run_ids,
+        edit_results=internal_result.edit_results,
         warnings=[*preview_result.warnings, *internal_result.warnings],
         validation=validation,
     )
@@ -368,7 +391,7 @@ def apply_document_edits(
 def render_review_html(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     annotations: list[TextAnnotation],
     title: str = "Review",
 ) -> ReviewHtmlResult:
@@ -453,7 +476,7 @@ def validate_pdf_annotations(
 def validate_text_annotations(
     *,
     document: DocumentInput | None = None,
-    source_path: str | None = None,
+    source_path: str | Path | None = None,
     annotations: list[TextAnnotation],
 ) -> AnnotationValidationResult:
     resolved = _resolve_document_args(document=document, source_path=source_path)
@@ -464,7 +487,7 @@ def validate_text_annotations(
 def _resolve_document_args(
     *,
     document: DocumentInput | None,
-    source_path: str | None,
+    source_path: str | Path | None,
 ) -> _ResolvedDocument:
     if document is not None and source_path is not None:
         raise ValueError("Specify either document or source_path, not both.")
@@ -476,11 +499,11 @@ def _resolve_document_args(
 
 
 def _resolve_document_input(document_input: DocumentInput) -> _ResolvedDocument:
-    native_source_path = document_input.source_path
+    native_source_path = str(document_input.source_path) if document_input.source_path is not None else None
     native_source_bytes = document_input.source_bytes
     resolved_source_name = (
         document_input.source_name
-        or (Path(document_input.source_path).name if document_input.source_path is not None else None)
+        or (Path(native_source_path).name if native_source_path is not None else None)
     )
 
     if document_input.doc_ir is not None:
@@ -571,7 +594,7 @@ def _build_target_identity_index(doc: DocIR) -> _TargetIdentityIndex:
             native_anchor=table.native_anchor,
         )
         _register_target_identity(by_identifier, identity)
-        for cell in table.cells:
+        for cell in table.iter_cells():
             register_cell(cell)
 
     def register_cell(cell: TableCellIR) -> None:
@@ -606,11 +629,34 @@ def _resolve_text_edits_for_doc(
                     target_kind=edit.target_kind,
                     target_id=edit.target_id,
                     message=f"Target does not exist: {edit.target_id}.",
-                    expected_text=edit.expected_text,
+                    expected_text_hash=edit.expected_text_hash,
                 )
             )
             continue
-        resolved.append(_ResolvedTextEdit(edit=edit, identity=identity))
+        if identity.kind not in _TEXT_TARGET_KINDS:
+            issues.append(
+                EditValidationIssue(
+                    code="target_kind_mismatch",
+                    target_kind=identity.kind,
+                    target_id=edit.target_id,
+                    message=f"{edit.target_id} is a {identity.kind} target, not a text-editable paragraph, run, or cell target.",
+                    expected_text_hash=edit.expected_text_hash,
+                )
+            )
+            continue
+        if edit.target_kind is not None and identity.kind != edit.target_kind:
+            issues.append(
+                EditValidationIssue(
+                    code="target_kind_mismatch",
+                    target_kind=edit.target_kind,
+                    target_id=edit.target_id,
+                    message=f"{edit.target_id} is a {identity.kind} target, not a {edit.target_kind} target.",
+                    expected_text_hash=edit.expected_text_hash,
+                )
+            )
+            continue
+        resolved_edit = edit.model_copy(update={"target_kind": identity.kind})
+        resolved.append(_ResolvedTextEdit(edit=resolved_edit, identity=identity))
     return resolved, issues
 
 
@@ -655,7 +701,7 @@ def _resolve_structural_edits_for_doc(
                     target_id=operation.target_id,
                     operation=operation.operation,
                     message=f"Target does not exist: {operation.target_id}.",
-                    expected_text=operation.expected_text,
+                    expected_text_hash=operation.expected_text_hash,
                 )
             )
             continue
@@ -682,7 +728,7 @@ def _resolve_style_edits_for_doc(
                 )
             )
             continue
-        if identity.kind != edit.target_kind:
+        if edit.target_kind is not None and identity.kind != edit.target_kind:
             issues.append(
                 EditValidationIssue(
                     code="target_kind_mismatch",
@@ -692,7 +738,21 @@ def _resolve_style_edits_for_doc(
                 )
             )
             continue
-        resolved.append(_ResolvedStyleEdit(edit=edit, identity=identity))
+        try:
+            resolved_edit = StyleEdit.model_validate(
+                {**edit.model_dump(), "target_kind": identity.kind}
+            )
+        except ValidationError as exc:
+            issues.append(
+                EditValidationIssue(
+                    code="invalid_style",
+                    target_kind=identity.kind,
+                    target_id=edit.target_id,
+                    message=str(exc),
+                )
+            )
+            continue
+        resolved.append(_ResolvedStyleEdit(edit=resolved_edit, identity=identity))
     return resolved, issues
 
 
@@ -809,6 +869,7 @@ def _validate_document_apply_request(
     ).issues
 
     issues.extend(_validate_output_options(output_path=output_path, output_filename=output_filename))
+    issues.extend(_validate_output_filename_extension(output_filename, resolved.source_doc_type))
 
     if not resolved.has_native_source and (output_path is not None or output_filename is not None):
         issues.append(
@@ -838,7 +899,8 @@ def _issue_to_exception(issue: EditValidationIssue) -> EditValidationError:
         target_kind=issue.target_kind,
         target_id=issue.target_id,
         operation=issue.operation,
-        expected_text=issue.expected_text,
+        expected_text_hash=issue.expected_text_hash,
+        current_text_hash=issue.current_text_hash,
         current_text=issue.current_text,
     )
 
@@ -858,6 +920,75 @@ def _merge_engine_result(target: _EditEngineResult, step: _EditEngineResult) -> 
     _extend_unique(target.removed_target_ids, step.removed_target_ids)
     _extend_unique(target.modified_run_ids, step.modified_run_ids)
     _extend_unique(target.warnings, step.warnings)
+
+
+def _edit_result_from_step(
+    *,
+    edit_index: int,
+    edit: DocumentEdit,
+    step: _EditEngineResult,
+    warnings: list[str] | None = None,
+) -> AppliedEditResult:
+    return AppliedEditResult(
+        edit_index=edit_index,
+        client_edit_id=getattr(edit, "client_edit_id", None),
+        edit_type=edit.edit_type,
+        ok=True,
+        target_id=getattr(edit, "target_id", None),
+        target_kind=getattr(edit, "target_kind", None),
+        operation=getattr(edit, "operation", None),
+        edits_applied=step.edits_applied,
+        operations_applied=step.operations_applied,
+        styles_applied=step.styles_applied,
+        modified_target_ids=step.modified_target_ids,
+        created_target_ids=step.created_target_ids,
+        removed_target_ids=step.removed_target_ids,
+        modified_run_ids=step.modified_run_ids,
+        warnings=warnings if warnings is not None else step.warnings,
+    )
+
+
+def _edit_result_from_issue(
+    *,
+    edit_index: int,
+    edit: DocumentEdit,
+    issue: EditValidationIssue,
+) -> AppliedEditResult:
+    return AppliedEditResult(
+        edit_index=edit_index,
+        client_edit_id=getattr(edit, "client_edit_id", None),
+        edit_type=edit.edit_type,
+        ok=False,
+        target_id=getattr(edit, "target_id", None),
+        target_kind=issue.target_kind or getattr(edit, "target_kind", None),
+        operation=getattr(edit, "operation", None),
+        validation_issue=issue,
+    )
+
+
+def _edit_index_for_issue(edits: Sequence[DocumentEdit], issue: EditValidationIssue) -> int | None:
+    for index, edit in enumerate(edits):
+        if issue.target_id is not None and getattr(edit, "target_id", None) != issue.target_id:
+            continue
+        if issue.operation is not None and getattr(edit, "operation", None) != issue.operation:
+            continue
+        return index
+    return None
+
+
+def _edit_results_from_validation(
+    edits: Sequence[DocumentEdit],
+    validation: EditValidationResult,
+) -> list[AppliedEditResult]:
+    results: list[AppliedEditResult] = []
+    emitted_indexes: set[int] = set()
+    for issue in validation.issues:
+        index = _edit_index_for_issue(edits, issue)
+        if index is None or index in emitted_indexes:
+            continue
+        results.append(_edit_result_from_issue(edit_index=index, edit=edits[index], issue=issue))
+        emitted_indexes.add(index)
+    return results
 
 
 def _canonical_text_edit_for_doc(doc: DocIR, edit: TextEdit, *, native: bool) -> TextEdit:
@@ -892,7 +1023,7 @@ def _apply_mixed_edits_to_doc_ir(
     current_doc.ensure_node_identity()
     result = _EditEngineResult(source_doc_type=current_doc.source_doc_type or (None if doc_type == "auto" else doc_type))
 
-    for edit in edits:
+    for edit_index, edit in enumerate(edits):
         if isinstance(edit, TextEdit):
             canonical_edit = _canonical_text_edit_for_doc(current_doc, edit, native=False)
             step = _apply_text_edits_to_source(
@@ -920,6 +1051,7 @@ def _apply_mixed_edits_to_doc_ir(
         if step.updated_doc_ir is None:
             raise EditValidationError("Edit preview did not return updated DocIR.")
         _merge_engine_result(result, step)
+        result.edit_results.append(_edit_result_from_step(edit_index=edit_index, edit=canonical_edit, step=step))
         current_doc = step.updated_doc_ir
 
     result.updated_doc_ir = current_doc
@@ -950,9 +1082,10 @@ def _apply_mixed_edits_to_native_source(
     mapping_doc.ensure_node_identity()
     result = _EditEngineResult(source_doc_type=resolved.source_doc_type)
 
-    for edit in edits:
+    for edit_index, edit in enumerate(edits):
         if isinstance(edit, TextEdit):
             native_edit = _canonical_text_edit_for_doc(mapping_doc, edit, native=True)
+            preview_edit = _canonical_text_edit_for_doc(mapping_doc, edit, native=False)
             step = _apply_text_edits_to_source(
                 current_bytes,
                 [native_edit],
@@ -961,12 +1094,13 @@ def _apply_mixed_edits_to_native_source(
             )
             preview = _apply_text_edits_to_source(
                 mapping_doc,
-                [_canonical_text_edit_for_doc(mapping_doc, edit, native=False)],
+                [preview_edit],
                 doc_type=mapping_doc.source_doc_type or current_doc_type,
                 source_name=current_source_name,
             )
         elif isinstance(edit, StructuralEdit):
             native_edit = _canonical_structural_edit_for_doc(mapping_doc, edit, native=True)
+            preview_edit = _canonical_structural_edit_for_doc(mapping_doc, edit, native=False)
             step = _apply_document_edits_to_source(
                 current_bytes,
                 [native_edit],
@@ -975,12 +1109,13 @@ def _apply_mixed_edits_to_native_source(
             )
             preview = _apply_document_edits_to_source(
                 mapping_doc,
-                [_canonical_structural_edit_for_doc(mapping_doc, edit, native=False)],
+                [preview_edit],
                 doc_type=mapping_doc.source_doc_type or current_doc_type,
                 source_name=current_source_name,
             )
         else:
             native_edit = _canonical_style_edit_for_doc(mapping_doc, edit, native=True)
+            preview_edit = _canonical_style_edit_for_doc(mapping_doc, edit, native=False)
             step = _apply_style_edits_to_source(
                 current_bytes,
                 [native_edit],
@@ -989,7 +1124,7 @@ def _apply_mixed_edits_to_native_source(
             )
             preview = _apply_style_edits_to_source(
                 mapping_doc,
-                [_canonical_style_edit_for_doc(mapping_doc, edit, native=False)],
+                [preview_edit],
                 doc_type=mapping_doc.source_doc_type or current_doc_type,
                 source_name=current_source_name,
             )
@@ -999,6 +1134,14 @@ def _apply_mixed_edits_to_native_source(
         if preview.updated_doc_ir is None:
             raise EditValidationError("Edit preview did not return updated DocIR.")
         _merge_engine_result(result, step)
+        result.edit_results.append(
+            _edit_result_from_step(
+                edit_index=edit_index,
+                edit=preview_edit,
+                step=preview,
+                warnings=[*preview.warnings, *step.warnings],
+            )
+        )
         current_bytes = step.output_bytes
         current_doc_type = infer_doc_type(current_bytes, "auto")
         current_source_name = step.output_filename or _default_output_filename(
@@ -1140,18 +1283,21 @@ def _validate_single_text_edit(index, resolved_edit: _ResolvedTextEdit) -> list[
                     target_kind=edit.target_kind,
                     target_id=target_id,
                     message=f"Paragraph target has mixed content and is not safely writable: {target_id}.",
-                    expected_text=edit.expected_text,
+                    expected_text_hash=edit.expected_text_hash,
+                    current_text_hash=_text_hash(paragraph.text),
                     current_text=paragraph.text,
                 )
             ]
-        if paragraph.text != edit.expected_text:
+        current_text_hash = _text_hash(paragraph.text)
+        if current_text_hash != edit.expected_text_hash:
             return [
                 EditValidationIssue(
-                    code="text_mismatch",
+                    code="text_hash_mismatch",
                     target_kind=edit.target_kind,
                     target_id=target_id,
-                    message=f"Paragraph text mismatch for {target_id}.",
-                    expected_text=edit.expected_text,
+                    message=f"Paragraph text hash mismatch for {target_id}.",
+                    expected_text_hash=edit.expected_text_hash,
+                    current_text_hash=current_text_hash,
                     current_text=paragraph.text,
                 )
             ]
@@ -1195,18 +1341,21 @@ def _validate_single_text_edit(index, resolved_edit: _ResolvedTextEdit) -> list[
                     target_kind=edit.target_kind,
                     target_id=target_id,
                     message=writable_reason or f"Cell target is not safely writable: {target_id}.",
-                    expected_text=edit.expected_text,
+                    expected_text_hash=edit.expected_text_hash,
+                    current_text_hash=_text_hash(cell.text),
                     current_text=cell.text,
                 )
             ]
-        if cell.text != edit.expected_text:
+        current_text_hash = _text_hash(cell.text)
+        if current_text_hash != edit.expected_text_hash:
             return [
                 EditValidationIssue(
-                    code="text_mismatch",
+                    code="text_hash_mismatch",
                     target_kind=edit.target_kind,
                     target_id=target_id,
-                    message=f"Cell text mismatch for {target_id}.",
-                    expected_text=edit.expected_text,
+                    message=f"Cell text hash mismatch for {target_id}.",
+                    expected_text_hash=edit.expected_text_hash,
+                    current_text_hash=current_text_hash,
                     current_text=cell.text,
                 )
             ]
@@ -1222,7 +1371,8 @@ def _validate_single_text_edit(index, resolved_edit: _ResolvedTextEdit) -> list[
                         f"Cell text replacement must preserve paragraph count for {target_id}: "
                         f"expected {expected_paragraphs} line(s), got {new_paragraphs}."
                     ),
-                    expected_text=edit.expected_text,
+                    expected_text_hash=edit.expected_text_hash,
+                    current_text_hash=current_text_hash,
                     current_text=cell.text,
                 )
             ]
@@ -1256,14 +1406,16 @@ def _validate_single_text_edit(index, resolved_edit: _ResolvedTextEdit) -> list[
                 message=f"Run target does not exist: {target_id}.",
             )
         ]
-    if run.text != edit.expected_text:
+    current_text_hash = _text_hash(run.text)
+    if current_text_hash != edit.expected_text_hash:
         return [
             EditValidationIssue(
-                code="text_mismatch",
+                code="text_hash_mismatch",
                 target_kind=edit.target_kind,
                 target_id=target_id,
-                message=f"Run text mismatch for {target_id}.",
-                expected_text=edit.expected_text,
+                message=f"Run text hash mismatch for {target_id}.",
+                expected_text_hash=edit.expected_text_hash,
+                current_text_hash=current_text_hash,
                 current_text=run.text,
             )
         ]
@@ -1331,6 +1483,44 @@ def _validate_output_options(*, output_path: str | None, output_filename: str | 
     return issues
 
 
+def _validate_output_filename_extension(
+    output_filename: str | None,
+    source_doc_type: str | None,
+) -> list[EditValidationIssue]:
+    if output_filename is None:
+        return []
+
+    filename = output_filename.strip()
+    pure = Path(filename)
+    if not filename or pure.is_absolute() or pure.name != filename or filename in {".", ".."}:
+        return []
+
+    suffix = pure.suffix.lower()
+    if suffix not in _OUTPUT_FILENAME_SUFFIXES:
+        allowed = ", ".join(sorted(_OUTPUT_FILENAME_SUFFIXES))
+        return [
+            EditValidationIssue(
+                code="invalid_operation",
+                message=f"output_filename must end with a supported write-back extension: {allowed}.",
+            )
+        ]
+
+    expected_suffix = _output_suffix_for_source_doc_type(source_doc_type)
+    if expected_suffix in _OUTPUT_FILENAME_SUFFIXES and suffix != expected_suffix:
+        source_label = str(source_doc_type or "document").upper()
+        return [
+            EditValidationIssue(
+                code="invalid_operation",
+                message=(
+                    f"output_filename extension {suffix!r} does not match {source_label} write-back; "
+                    f"use {expected_suffix!r}."
+                ),
+            )
+        ]
+
+    return []
+
+
 def _issue_from_edit_exception(exc: EditValidationError) -> EditValidationIssue:
     return EditValidationIssue(
         code=getattr(exc, "code", "invalid_operation"),
@@ -1338,7 +1528,8 @@ def _issue_from_edit_exception(exc: EditValidationError) -> EditValidationIssue:
         target_id=getattr(exc, "target_id", None),
         operation=getattr(exc, "operation", None),
         message=str(exc),
-        expected_text=getattr(exc, "expected_text", None),
+        expected_text_hash=getattr(exc, "expected_text_hash", None),
+        current_text_hash=getattr(exc, "current_text_hash", None),
         current_text=getattr(exc, "current_text", None),
     )
 
@@ -1511,6 +1702,7 @@ def _paragraph_context(paragraph: ParagraphIR, *, include_runs: bool) -> Documen
     return DocumentParagraphContext(
         node_id=paragraph.node_id,
         text=text,
+        text_hash=_text_hash(text),
         display_text=_paragraph_display_text(paragraph),
         page_number=paragraph.page_number,
         list_info=paragraph.para_style.list_info if paragraph.para_style is not None else None,
@@ -1541,6 +1733,7 @@ def _run_contexts(paragraph: ParagraphIR) -> list[DocumentRunContext]:
             DocumentRunContext(
                 node_id=run.node_id,
                 text=run.text,
+                text_hash=_text_hash(run.text),
                 start=start,
                 end=end,
                 native_anchor=run.native_anchor,
@@ -1567,10 +1760,10 @@ def _collect_editable_targets(
         for cell in _iter_doc_ir_cells(doc.paragraphs)
         for paragraph in cell.paragraphs
     }
-    cell_to_table = {
-        cell.node_id: table
+    cell_to_table_position = {
+        cell.node_id: (table, row_index, col_index)
         for table in _iter_doc_ir_tables(doc.paragraphs)
-        for cell in table.cells
+        for row_index, col_index, cell in table.iter_cell_positions()
     }
     emitted_cell_ids: set[str] = set()
     for paragraph in _iter_doc_ir_paragraphs(doc.paragraphs):
@@ -1578,7 +1771,10 @@ def _collect_editable_targets(
         if parent_cell is not None and parent_cell.node_id not in emitted_cell_ids:
             cell_requested = exact_target_ids is None or parent_cell.node_id in exact_target_ids
             cell_writable, cell_writable_reason = _cell_writable(parent_cell)
-            parent_table = cell_to_table.get(parent_cell.node_id)
+            parent_table_position = cell_to_table_position.get(parent_cell.node_id)
+            parent_table = parent_table_position[0] if parent_table_position is not None else None
+            row_index = parent_table_position[1] if parent_table_position is not None else None
+            column_index = parent_table_position[2] if parent_table_position is not None else None
             cell_style = parent_cell.cell_style
             if "cell" in target_kinds and cell_requested:
                 if not only_writable or cell_writable:
@@ -1588,11 +1784,12 @@ def _collect_editable_targets(
                             target_id=parent_cell.node_id,
                             parent_paragraph_id=paragraph.node_id,
                             parent_table_id=parent_table.node_id if parent_table is not None else None,
-                            row_index=parent_cell.row_index,
-                            column_index=parent_cell.col_index,
+                            row_index=row_index,
+                            column_index=column_index,
                             rowspan=max(cell_style.rowspan, 1) if cell_style is not None else 1,
                             colspan=max(cell_style.colspan, 1) if cell_style is not None else 1,
                             current_text=parent_cell.text,
+                            text_hash=_text_hash(parent_cell.text),
                             page_number=paragraph.page_number,
                             native_anchor=parent_cell.native_anchor,
                             writable=cell_writable,
@@ -1611,6 +1808,7 @@ def _collect_editable_targets(
                             target_kind="paragraph",
                             target_id=paragraph.node_id,
                             current_text=paragraph.text or "",
+                            text_hash=_text_hash(paragraph.text or ""),
                             page_number=paragraph.page_number,
                             native_anchor=paragraph.native_anchor,
                         writable=writable,
@@ -1632,6 +1830,7 @@ def _collect_editable_targets(
                             target_id=run.node_id,
                             parent_paragraph_id=paragraph.node_id,
                             current_text=run.text,
+                            text_hash=_text_hash(run.text),
                             page_number=paragraph.page_number,
                             native_anchor=run.native_anchor,
                             writable=True,
@@ -1650,6 +1849,7 @@ def _collect_editable_targets(
                             row_count=table.row_count,
                             column_count=table.col_count,
                             current_text=table.markdown,
+                            text_hash=_text_hash(table.markdown),
                             page_number=paragraph.page_number,
                             native_anchor=table.native_anchor,
                             writable=True,
@@ -1666,6 +1866,7 @@ def _collect_editable_targets(
                             target_id=image.node_id,
                             parent_paragraph_id=paragraph.node_id,
                             current_text=image.alt_text or image.title or "",
+                            text_hash=_text_hash(image.alt_text or image.title or ""),
                             page_number=paragraph.page_number,
                             native_anchor=image.native_anchor,
                             writable=True,

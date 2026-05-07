@@ -56,12 +56,12 @@ class StyleExtractorTests(unittest.TestCase):
                             bbox=BoundingBox(left_pt=10, bottom_pt=20, right_pt=110, top_pt=120),
                             table_style=TableStyleInfo(row_count=1, col_count=1, width_pt=120.0, height_pt=48.0),
                             cells=[
-                                TableCellIR(
-                                    **_pdf_node_kwargs("cell", "s1.p2.r1.tbl1.tr1.tc1"),
-                                    row_index=1,
-                                    col_index=1,
-                                    cell_style=CellStyleInfo(rowspan=1, colspan=1, width_pt=120.0, height_pt=48.0),
-                                )
+                                [
+                                    TableCellIR(
+                                        **_pdf_node_kwargs("cell", "s1.p2.r1.tbl1.tr1.tc1"),
+                                        cell_style=CellStyleInfo(rowspan=1, colspan=1, width_pt=120.0, height_pt=48.0),
+                                    )
+                                ]
                             ],
                         )
                     ],
@@ -109,6 +109,27 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(pstyle.right_indent_pt or 0.0, 12.0, places=3)
         self.assertAlmostEqual(pstyle.first_line_indent_pt or 0.0, -6.0, places=3)
         self.assertAlmostEqual(style_map_file.paragraphs["s1.p1"].hanging_indent_pt or 0.0, 6.0, places=3)
+
+    def test_extract_docx_cell_defaults_do_not_copy_paragraph_alignment(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "cell_alignment_sample.docx"
+
+            doc = Document()
+            cell = doc.add_table(rows=1, cols=1).cell(0, 0)
+            cell.text = "Centered paragraph"
+            cell.paragraphs[0].alignment = 1
+            doc.save(str(docx_path))
+
+            style_map = extract_styles_docx(docx_path)
+
+        cell_style = style_map.cells["s1.p1.r1.tbl1.tr1.tc1"]
+        paragraph_style = style_map.paragraphs["s1.p1.r1.tbl1.tr1.tc1.p1"]
+
+        self.assertIsNone(cell_style.horizontal_align)
+        self.assertEqual(cell_style.vertical_align, "center")
+        self.assertEqual(paragraph_style.align, "center")
 
     def test_extract_hwpx_paragraph_indents(self) -> None:
         header_xml = """<?xml version="1.0" encoding="UTF-8"?>
@@ -173,6 +194,50 @@ class StyleExtractorTests(unittest.TestCase):
         self.assertTrue(rstyle.underline)
         self.assertEqual(rstyle.color, "#112233")
         self.assertAlmostEqual(rstyle.size_pt or 0.0, 12.0, places=3)
+
+    def test_extract_hwpx_cell_defaults_do_not_copy_paragraph_alignment(self) -> None:
+        hwpx_bytes_io = BytesIO()
+        with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
+            zf.writestr(
+                "Contents/header.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:paraProperties itemCnt="1">
+    <hh:paraPr id="1"><hh:align horizontal="CENTER" /></hh:paraPr>
+  </hh:paraProperties>
+</hh:head>
+""",
+            )
+            zf.writestr(
+                "Contents/section0.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run>
+      <hp:tbl>
+        <hp:tr>
+          <hp:tc>
+            <hp:subList>
+              <hp:p paraPrIDRef="1"><hp:run><hp:t>Centered paragraph</hp:t></hp:run></hp:p>
+            </hp:subList>
+            <hp:cellAddr colAddr="0" rowAddr="0"/>
+            <hp:cellSpan colSpan="1" rowSpan="1"/>
+          </hp:tc>
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>
+""",
+            )
+
+        style_map = extract_styles_hwpx(hwpx_bytes_io.getvalue())
+        cell_style = style_map.cells["s1.p1.r1.tbl1.tr1.tc1"]
+        paragraph_style = style_map.paragraphs["s1.p1.r1.tbl1.tr1.tc1.p1"]
+
+        self.assertIsNone(cell_style.horizontal_align)
+        self.assertEqual(cell_style.vertical_align, "center")
+        self.assertEqual(paragraph_style.align, "center")
 
     def test_extract_hwpx_repairs_malformed_header_style_attrs(self) -> None:
         header_xml = """<?xml version="1.0" encoding="UTF-8"?>
