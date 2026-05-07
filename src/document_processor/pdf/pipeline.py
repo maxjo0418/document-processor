@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from ..models import DocIR, PageInfo
 from .config import PdfParseConfig
+from .diagnostics import detect_pdf_table_warnings, log_pdf_table_warnings
 from .enhancement.image_fallback import replace_low_resolution_pdf_image_assets
 from .odl import build_doc_ir_from_odl_result, preprocess_dotted_rule_splits, run_odl_json
 from .parsing import PageClass, PdfProfile, decide_page, probe_pdf
 from .preview.context import build_pdf_preview_context, collect_pdfium_visual_block_candidates
 from .preview.models import PdfPreviewContext
+
+logger = logging.getLogger(__name__)
 
 
 def parse_pdf_to_doc_ir(
@@ -73,6 +77,8 @@ def _parse_pdf_to_doc_ir_with_preview(
             pdf_path=source_path,
             page_numbers=structured_pages,
         )
+        table_warnings = detect_pdf_table_warnings(raw_document, source_path=source_path)
+        log_pdf_table_warnings(table_warnings, logger)
         # The dotted-rule pass mutates raw table structure. Build preview context
         # after it so table grid hints match the final DocIR TableIR shape.
         preview_context = build_pdf_preview_context(raw_document)
