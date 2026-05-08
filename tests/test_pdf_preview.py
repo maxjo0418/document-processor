@@ -11,19 +11,21 @@ SRC_ROOT = THIS_DIR.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from document_processor.models import ParagraphIR, RunIR
 from document_processor.pdf.odl import build_doc_ir_from_odl_result
 from document_processor.pdf.meta import PdfBoundingBox
 from document_processor.pdf.preview.analyze import (
     _build_visual_block_candidates,
     _connected_line_components,
     _extract_pdfium_visual_primitives,
+    extract_pdfium_table_rule_primitives,
 )
 from document_processor.pdf.preview.context import build_pdf_preview_context, collect_pdfium_visual_block_candidates
 from document_processor.pdf.preview.models import (
     PdfPreviewVisualBlockCandidate,
     PdfPreviewVisualPrimitive,
 )
-from document_processor.pdf.preview.normalize import enrich_pdf_doc_ir
+from document_processor.pdf.preview.normalize import _is_arrow_connector_paragraph, enrich_pdf_doc_ir
 
 
 class PdfPreviewTests(unittest.TestCase):
@@ -255,6 +257,137 @@ class PdfPreviewTests(unittest.TestCase):
         self.assertIn("Figure caption", [paragraph.text.strip() for paragraph in doc.paragraphs])
         image_paragraphs = [paragraph for paragraph in doc.paragraphs if len(paragraph.images) == 1]
         self.assertEqual(len(image_paragraphs), 3)
+
+    def test_enrich_pdf_doc_ir_includes_arrow_connector_in_layout_row(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "pages": [{"page number": 1, "width pt": 200, "height pt": 200}],
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "bounding box": [10, 100, 60, 140],
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "page number": 1,
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "bounding box": [10, 100, 60, 140],
+                                    "kids": [{"type": "paragraph", "content": "요건검토", "page number": 1}],
+                                }
+                            ]
+                        }
+                    ],
+                },
+                {
+                    "type": "paragraph",
+                    "content": "ð",
+                    "page number": 1,
+                    "bounding box": [70, 112, 78, 128],
+                    "spans": [
+                        {
+                            "type": "text chunk",
+                            "content": "ð",
+                            "page number": 1,
+                            "bounding box": [70, 112, 78, 128],
+                        }
+                    ],
+                },
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "bounding box": [90, 100, 140, 140],
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "page number": 1,
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "bounding box": [90, 100, 140, 140],
+                                    "kids": [{"type": "paragraph", "content": "서류평가", "page number": 1}],
+                                }
+                            ]
+                        }
+                    ],
+                },
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        context = build_pdf_preview_context(raw_document)
+
+        enrich_pdf_doc_ir(doc, preview_context=context)
+
+        layout_rows = [
+            paragraph.tables[0]
+            for paragraph in doc.paragraphs
+            if paragraph.tables
+            and paragraph.tables[0].table_style is not None
+            and paragraph.tables[0].table_style.render_grid is False
+            and paragraph.tables[0].row_count == 1
+            and paragraph.tables[0].col_count >= 2
+        ]
+        self.assertEqual(len(layout_rows), 1)
+        self.assertEqual([cell.text for cell in layout_rows[0].cells[0]], ["요건검토", "ð", "서류평가"])
+
+    def test_enrich_pdf_doc_ir_layout_row_cell_width_includes_gap_padding(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "pages": [{"page number": 1, "width pt": 200, "height pt": 200}],
+            "kids": [
+                {
+                    "type": "image",
+                    "page number": 1,
+                    "bounding box": [10, 70, 60, 150],
+                    "data": "data:image/png;base64,AAAA",
+                    "width px": 50,
+                    "height px": 80,
+                },
+                {
+                    "type": "image",
+                    "page number": 1,
+                    "bounding box": [72, 70, 122, 150],
+                    "data": "data:image/png;base64,AAAA",
+                    "width px": 50,
+                    "height px": 80,
+                },
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        context = build_pdf_preview_context(raw_document)
+
+        enrich_pdf_doc_ir(doc, preview_context=context)
+
+        layout_row = doc.paragraphs[0].tables[0]
+        first_cell_style = layout_row.cells[0][0].cell_style
+        second_cell_style = layout_row.cells[0][1].cell_style
+
+        self.assertIsNotNone(first_cell_style)
+        self.assertIsNotNone(second_cell_style)
+        self.assertAlmostEqual(first_cell_style.width_pt or 0.0, 62.0)
+        self.assertAlmostEqual(first_cell_style.padding_right_pt or 0.0, 12.0)
+        self.assertAlmostEqual(second_cell_style.width_pt or 0.0, 50.0)
+        self.assertIsNone(second_cell_style.padding_right_pt)
+
+    def test_pdf_layout_row_arrow_connector_whitelist_includes_directional_arrows(self) -> None:
+        connectors = ("->", "<-", "→", "←", "↑", "↓", "↔", "↕", "➡", "⬅", "⬆", "⬇", "⇧", "⇩", "ð", "ï")
+        for connector in connectors:
+            with self.subTest(connector=connector):
+                paragraph = ParagraphIR(text=connector, content=[RunIR(text=connector)])
+
+                self.assertTrue(_is_arrow_connector_paragraph(paragraph))
 
     def test_extract_pdfium_visual_primitives_collects_box_metadata(self) -> None:
         class _FakeSegment:
@@ -529,6 +662,145 @@ class PdfPreviewTests(unittest.TestCase):
 
         self.assertEqual(len(primitives), 0)
         self.assertEqual(_build_visual_block_candidates(primitives), [])
+
+    def test_extract_pdfium_visual_primitives_keeps_fill_only_thin_line_rectangle_only_for_table_rules(self) -> None:
+        class _FakeSegment:
+            def __init__(self, segment_type: int, x: float, y: float, *, close: bool = False) -> None:
+                self.segment_type = segment_type
+                self.x = x
+                self.y = y
+                self.close = close
+
+        class _FakeRawObject:
+            def __init__(
+                self,
+                *,
+                fill: tuple[int, int, int, int],
+                stroke: tuple[int, int, int, int],
+                stroke_width: float,
+                segments: list[_FakeSegment],
+                fill_mode: int = 1,
+                stroke_mode: int = 0,
+            ) -> None:
+                self.object_type = 1
+                self.fill = fill
+                self.stroke = stroke
+                self.stroke_width = stroke_width
+                self.segments = segments
+                self.fill_mode = fill_mode
+                self.stroke_mode = stroke_mode
+
+        class _FakeObject:
+            def __init__(self, raw, bounds) -> None:
+                self.raw = raw
+                self._bounds = bounds
+
+            def get_bounds(self):
+                return self._bounds
+
+        class _FakePage:
+            def __init__(self, objects, *, width: float = 100.0, height: float = 100.0) -> None:
+                self._objects = objects
+                self._width = width
+                self._height = height
+
+            def get_objects(self):
+                return self._objects
+
+            def get_width(self):
+                return self._width
+
+            def get_height(self):
+                return self._height
+
+        class _FakeRawModule:
+            FPDF_PAGEOBJ_PATH = 1
+            FPDF_PAGEOBJ_SHADING = 2
+            FPDF_PAGEOBJ_IMAGE = 3
+            FPDF_PAGEOBJ_TEXT = 4
+            FPDF_FILLMODE_NONE = 0
+            FPDF_SEGMENT_MOVETO = 2
+            FPDF_SEGMENT_LINETO = 0
+
+            @staticmethod
+            def FPDFPageObj_GetType(obj_raw) -> int:
+                return obj_raw.object_type
+
+            @staticmethod
+            def FPDFPageObj_GetFillColor(obj_raw, red, green, blue, alpha) -> int:
+                red.value, green.value, blue.value, alpha.value = obj_raw.fill
+                return 1
+
+            @staticmethod
+            def FPDFPageObj_GetStrokeColor(obj_raw, red, green, blue, alpha) -> int:
+                red.value, green.value, blue.value, alpha.value = obj_raw.stroke
+                return 1
+
+            @staticmethod
+            def FPDFPageObj_GetStrokeWidth(obj_raw, width) -> int:
+                width.value = obj_raw.stroke_width
+                return 1
+
+            @staticmethod
+            def FPDFPath_CountSegments(obj_raw) -> int:
+                return len(obj_raw.segments)
+
+            @staticmethod
+            def FPDFPath_GetPathSegment(obj_raw, index: int):
+                return obj_raw.segments[index]
+
+            @staticmethod
+            def FPDFPath_GetDrawMode(obj_raw, fill_mode, stroke) -> int:
+                fill_mode.value = obj_raw.fill_mode
+                stroke.value = obj_raw.stroke_mode
+                return 1
+
+            @staticmethod
+            def FPDFPathSegment_GetType(segment) -> int:
+                return segment.segment_type
+
+            @staticmethod
+            def FPDFPathSegment_GetPoint(segment, x, y) -> int:
+                x.value = segment.x
+                y.value = segment.y
+                return 1
+
+            @staticmethod
+            def FPDFPathSegment_GetClose(segment) -> int:
+                return 1 if segment.close else 0
+
+        fill_only_vertical_rule = _FakeObject(
+            _FakeRawObject(
+                fill=(0, 0, 0, 255),
+                stroke=(0, 0, 0, 0),
+                stroke_width=0.0,
+                fill_mode=1,
+                stroke_mode=0,
+                segments=[
+                    _FakeSegment(2, 20.0, 10.0),
+                    _FakeSegment(0, 20.6, 10.0),
+                    _FakeSegment(0, 20.6, 70.0),
+                    _FakeSegment(0, 20.0, 70.0, close=True),
+                ],
+            ),
+            (20.0, 10.0, 20.6, 70.0),
+        )
+
+        visual_primitives = _extract_pdfium_visual_primitives(
+            _FakePage([fill_only_vertical_rule]),
+            page_number=1,
+            raw_module=_FakeRawModule,
+        )
+        rule_primitives = extract_pdfium_table_rule_primitives(
+            _FakePage([fill_only_vertical_rule]),
+            page_number=1,
+            raw_module=_FakeRawModule,
+        )
+
+        self.assertEqual(visual_primitives, [])
+        self.assertEqual(len(rule_primitives), 1)
+        self.assertEqual(rule_primitives[0].object_type, "path")
+        self.assertEqual(rule_primitives[0].candidate_roles, ["vertical_line_segment"])
 
     def test_extract_pdfium_visual_primitives_drops_white_stroke_only_box(self) -> None:
         class _FakeSegment:

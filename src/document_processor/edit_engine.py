@@ -14,7 +14,7 @@ import zipfile
 
 from pydantic import BaseModel, Field
 
-from .api_types import StyleEdit, StructuralEdit, TextEdit
+from .api_types import AppliedEditResult, StyleEdit, StructuralEdit, TextEdit
 from .core import convert_hwp_to_hwpx_bytes
 from .io_utils import SourceDocType, TemporarySourcePath, coerce_source_to_supported_value, infer_doc_type
 from .models import DocIR, ImageIR, NativeAnchor, NodeKind, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id, _make_native_anchor
@@ -30,7 +30,8 @@ class EditValidationError(ValueError):
         target_kind: str | None = None,
         target_id: str | None = None,
         operation: str | None = None,
-        expected_text: str | None = None,
+        expected_text_hash: str | None = None,
+        current_text_hash: str | None = None,
         current_text: str | None = None,
     ) -> None:
         super().__init__(message)
@@ -38,7 +39,8 @@ class EditValidationError(ValueError):
         self.target_kind = target_kind
         self.target_id = target_id
         self.operation = operation
-        self.expected_text = expected_text
+        self.expected_text_hash = expected_text_hash
+        self.current_text_hash = current_text_hash
         self.current_text = current_text
 
 
@@ -57,7 +59,14 @@ class _EditEngineResult(BaseModel):
     created_target_ids: list[str] = Field(default_factory=list)
     removed_target_ids: list[str] = Field(default_factory=list)
     modified_run_ids: list[str] = Field(default_factory=list)
+    edit_results: list[AppliedEditResult] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+def _text_hash(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
 class _EditableRunRef:
@@ -158,7 +167,7 @@ def _iter_doc_ir_paragraphs(paragraphs: list[ParagraphIR]):
 
 
 def _iter_doc_ir_table_paragraphs(table: TableIR):
-    for cell in table.cells:
+    for cell in table.iter_cells():
         for paragraph in cell.paragraphs:
             yield paragraph
             for nested_table in paragraph.tables:
@@ -203,7 +212,7 @@ def _build_doc_ir_index(doc: DocIR) -> _EditableDocIndex:
         return paragraph_ref
 
     def walk_table(table: TableIR, *, recompute_after: Callable[[], None] | None) -> None:
-        for cell in table.cells:
+        for cell in table.iter_cells():
             cell_paragraph_refs: list[_EditableParagraphRef] = []
 
             def recompute_cell(node: TableCellIR = cell) -> None:
@@ -845,9 +854,16 @@ def _validate_paragraph_edit(index: _EditableDocIndex, edit: TextEdit) -> _Edita
         raise EditValidationError(
             f"Paragraph edit targets unsupported mixed content (tables/images): {edit.target_id}"
         )
-    if paragraph.text != edit.expected_text:
+    current_hash = _text_hash(paragraph.text)
+    if current_hash != edit.expected_text_hash:
         raise EditValidationError(
-            f"Paragraph text mismatch for {edit.target_id}: expected {edit.expected_text!r}, got {paragraph.text!r}"
+            f"Paragraph text hash mismatch for {edit.target_id}.",
+            code="text_hash_mismatch",
+            target_kind="paragraph",
+            target_id=edit.target_id,
+            expected_text_hash=edit.expected_text_hash,
+            current_text_hash=current_hash,
+            current_text=paragraph.text,
         )
     return paragraph
 
@@ -856,9 +872,16 @@ def _validate_run_edit(index: _EditableDocIndex, edit: TextEdit) -> _EditableRun
     run = index.runs.get(edit.target_id)
     if run is None:
         raise EditValidationError(f"Run does not exist: {edit.target_id}")
-    if run.text != edit.expected_text:
+    current_hash = _text_hash(run.text)
+    if current_hash != edit.expected_text_hash:
         raise EditValidationError(
-            f"Run text mismatch for {edit.target_id}: expected {edit.expected_text!r}, got {run.text!r}"
+            f"Run text hash mismatch for {edit.target_id}.",
+            code="text_hash_mismatch",
+            target_kind="run",
+            target_id=edit.target_id,
+            expected_text_hash=edit.expected_text_hash,
+            current_text_hash=current_hash,
+            current_text=run.text,
         )
     return run
 
@@ -873,9 +896,16 @@ def _validate_cell_edit(index: _EditableDocIndex, edit: TextEdit) -> _EditableCe
         )
     if not cell.paragraphs or any(not paragraph.runs for paragraph in cell.paragraphs):
         raise EditValidationError(f"Cell does not contain editable text runs: {edit.target_id}")
-    if cell.text != edit.expected_text:
+    current_hash = _text_hash(cell.text)
+    if current_hash != edit.expected_text_hash:
         raise EditValidationError(
-            f"Cell text mismatch for {edit.target_id}: expected {edit.expected_text!r}, got {cell.text!r}"
+            f"Cell text hash mismatch for {edit.target_id}.",
+            code="text_hash_mismatch",
+            target_kind="cell",
+            target_id=edit.target_id,
+            expected_text_hash=edit.expected_text_hash,
+            current_text_hash=current_hash,
+            current_text=cell.text,
         )
     expected_paragraphs = len(cell.paragraphs)
     new_paragraphs = len(edit.new_text.split("\n"))
@@ -1045,7 +1075,7 @@ def _build_structural_doc_ir_index(doc: DocIR) -> _StructuralDocIrIndex:
                     walk_table(item)
 
     def walk_table(table: TableIR) -> None:
-        for cell in table.cells:
+        for cell in table.iter_cells():
             index.cells[cell.node_id] = _DocIrCellLocation(node=cell, table=table)
             walk_paragraphs(cell.paragraphs, parent_cell=cell)
 
@@ -1152,12 +1182,12 @@ def _cell_style_span(cell: TableCellIR, attr: str) -> int:
     return max(value or 1, 1)
 
 
-def _cell_covers_column(cell: TableCellIR, col_index: int) -> bool:
-    return cell.col_index <= col_index < cell.col_index + _cell_style_span(cell, "colspan")
+def _cell_covers_column(cell: TableCellIR, cell_col_index: int, target_col_index: int) -> bool:
+    return cell_col_index <= target_col_index < cell_col_index + _cell_style_span(cell, "colspan")
 
 
-def _cell_covers_row(cell: TableCellIR, row_index: int) -> bool:
-    return cell.row_index <= row_index < cell.row_index + _cell_style_span(cell, "rowspan")
+def _cell_covers_row(cell: TableCellIR, cell_row_index: int, target_row_index: int) -> bool:
+    return cell_row_index <= target_row_index < cell_row_index + _cell_style_span(cell, "rowspan")
 
 
 def _apply_cell_style_fields(cell: TableCellIR, edit: StyleEdit, fields: set[str]) -> None:
@@ -1216,16 +1246,19 @@ def _apply_style_edit_to_doc_ir_index(index: _StructuralDocIrIndex, edit: StyleE
         location = index.cells[edit.target_id]
         cell = location.node
         _apply_cell_style_fields(cell, edit, _CELL_DIRECT_STYLE_FIELDS)
+        cell_position = location.table.cell_position(cell)
 
-        if "width_pt" in _style_edit_supplied_fields(edit):
-            for table_cell in location.table.cells:
-                if _cell_covers_column(table_cell, cell.col_index):
+        if cell_position is not None and "width_pt" in _style_edit_supplied_fields(edit):
+            _row_index, target_col_index = cell_position
+            for _table_row_index, table_col_index, table_cell in location.table.iter_cell_positions():
+                if _cell_covers_column(table_cell, table_col_index, target_col_index):
                     _apply_cell_style_fields(table_cell, edit, {"width_pt"})
                     _append_unique(result.modified_target_ids, table_cell.node_id)
 
-        if "height_pt" in _style_edit_supplied_fields(edit):
-            for table_cell in location.table.cells:
-                if _cell_covers_row(table_cell, cell.row_index):
+        if cell_position is not None and "height_pt" in _style_edit_supplied_fields(edit):
+            target_row_index, _col_index = cell_position
+            for table_row_index, _table_col_index, table_cell in location.table.iter_cell_positions():
+                if _cell_covers_row(table_cell, table_row_index, target_row_index):
                     _apply_cell_style_fields(table_cell, edit, {"height_pt"})
                     _append_unique(result.modified_target_ids, table_cell.node_id)
     elif edit.target_kind == "table":
@@ -1303,7 +1336,7 @@ def _all_doc_ir_node_ids(doc: DocIR) -> set[str]:
     def walk_table(table: TableIR) -> None:
         if table.node_id:
             ids.add(table.node_id)
-        for cell in table.cells:
+        for cell in table.iter_cells():
             if cell.node_id:
                 ids.add(cell.node_id)
             for paragraph in cell.paragraphs:
@@ -1413,8 +1446,6 @@ def _make_inserted_cell(
 ) -> TableCellIR:
     cell = TableCellIR(
         node_id=_new_inserted_node_id("cell", f"{seed}.cell.r{row_index}.c{col_index}.{_text_digest(text)}", existing_ids),
-        row_index=row_index,
-        col_index=col_index,
         cell_style=cell_style.model_copy(deep=True) if cell_style is not None else _default_cell_style(row_count=row_count, col_count=col_count),
         native_anchor=_inserted_anchor("cell", seed, source_doc_type=source_doc_type, text=text),
     )
@@ -1449,8 +1480,9 @@ def _make_inserted_table(
         native_anchor=_inserted_anchor("table", seed, source_doc_type=source_doc_type),
     )
     for row_index, row in enumerate(rows, start=1):
+        cell_row: list[TableCellIR] = []
         for col_index, text in enumerate(row, start=1):
-            table.cells.append(
+            cell_row.append(
                 _make_inserted_cell(
                     row_index=row_index,
                     col_index=col_index,
@@ -1463,6 +1495,7 @@ def _make_inserted_table(
                     page_number=page_number,
                 )
             )
+        table.cells.append(cell_row)
     return table
 
 
@@ -1480,7 +1513,7 @@ def _assign_page_number_to_paragraph(paragraph: ParagraphIR, page_number: int | 
     paragraph.page_number = page_number
     for node in paragraph.content:
         if isinstance(node, TableIR):
-            for cell in node.cells:
+            for cell in node.iter_cells():
                 for cell_paragraph in cell.paragraphs:
                     _assign_page_number_to_paragraph(cell_paragraph, page_number)
 
@@ -1496,7 +1529,7 @@ def _infer_table_page_number(index: _StructuralDocIrIndex, table: TableIR) -> in
     table_location = index.tables.get(table.node_id)
     if table_location is not None and table_location.paragraph.page_number is not None:
         return table_location.paragraph.page_number
-    for cell in table.cells:
+    for cell in table.iter_cells():
         if (page_number := _infer_cell_page_number(cell)) is not None:
             return page_number
     return None
@@ -1521,7 +1554,7 @@ def _collect_doc_ir_node_ids(node) -> list[str]:
 
     def walk_table(table: TableIR) -> None:
         add(table.node_id)
-        for cell in table.cells:
+        for cell in table.iter_cells():
             add(cell.node_id)
             for paragraph in cell.paragraphs:
                 walk_paragraph(paragraph)
@@ -1571,24 +1604,30 @@ def _replace_cell_paragraphs(
 
 
 def _recompute_table_shape(table: TableIR) -> None:
-    table.row_count = max((cell.row_index for cell in table.cells), default=0)
-    table.col_count = max((cell.col_index for cell in table.cells), default=0)
+    table.expand_merged_cells()
+    row_count = len(table.cells)
+    col_count = max((len(row) for row in table.cells), default=0)
+    for row_index, col_index, cell in table.iter_cell_positions():
+        row_count = max(row_count, row_index + _cell_style_span(cell, "rowspan") - 1)
+        col_count = max(col_count, col_index + _cell_style_span(cell, "colspan") - 1)
+    table.row_count = row_count
+    table.col_count = col_count
     if table.table_style is not None:
         table.table_style.row_count = table.row_count
         table.table_style.col_count = table.col_count
 
 
 def _table_row_count(table: TableIR) -> int:
-    return table.row_count or max((cell.row_index for cell in table.cells), default=0)
+    return table.row_count or len(table.cells)
 
 
 def _table_col_count(table: TableIR) -> int:
-    return table.col_count or max((cell.col_index for cell in table.cells), default=0)
+    return table.col_count or max((len(row) for row in table.cells), default=0)
 
 
 def _table_cell_at(table: TableIR, *, row_index: int, col_index: int) -> TableCellIR | None:
-    for cell in table.cells:
-        if cell.row_index == row_index and cell.col_index == col_index:
+    for cell_row_index, cell_col_index, cell in table.iter_cell_positions():
+        if cell_row_index == row_index and cell_col_index == col_index:
             return cell
     return None
 
@@ -1612,7 +1651,15 @@ def _resolve_table_axis(
 ) -> tuple[TableIR, int]:
     cell_location = index.cells.get(operation.target_id)
     if cell_location is not None:
-        return cell_location.table, cell_location.node.row_index if axis == "row" else cell_location.node.col_index
+        position = cell_location.table.cell_position(cell_location.node)
+        if position is None:
+            raise EditValidationError(
+                f"{operation.operation} target cell is not in its parent table: {operation.target_id}.",
+                code="target_not_found",
+                target_id=operation.target_id,
+                operation=operation.operation,
+            )
+        return cell_location.table, position[0] if axis == "row" else position[1]
 
     table_location = index.tables.get(operation.target_id)
     if table_location is None:
@@ -1635,15 +1682,17 @@ def _resolve_table_axis(
     return table_location.node, axis_index
 
 
-def _validate_expected_text(expected_text: str | None, current_text: str, operation: StructuralEdit, *, target_kind: str) -> None:
-    if expected_text is not None and current_text != expected_text:
+def _validate_expected_text_hash(expected_text_hash: str | None, current_text: str, operation: StructuralEdit, *, target_kind: str) -> None:
+    current_text_hash = _text_hash(current_text)
+    if expected_text_hash is not None and current_text_hash != expected_text_hash:
         raise EditValidationError(
-            f"Text mismatch for {operation.target_id}.",
-            code="text_mismatch",
+            f"Text hash mismatch for {operation.target_id}.",
+            code="text_hash_mismatch",
             target_kind=target_kind,
             target_id=operation.target_id,
             operation=operation.operation,
-            expected_text=expected_text,
+            expected_text_hash=expected_text_hash,
+            current_text_hash=current_text_hash,
             current_text=current_text,
         )
 
@@ -1749,7 +1798,7 @@ def _apply_structural_doc_ir_operation(
                 target_id=operation.target_id,
                 operation=operation.operation,
             )
-        _validate_expected_text(operation.expected_text, paragraph_location.node.text, operation, target_kind="paragraph")
+        _validate_expected_text_hash(operation.expected_text_hash, paragraph_location.node.text, operation, target_kind="paragraph")
         for node_id in _collect_doc_ir_node_ids(paragraph_location.node):
             _append_unique(result.removed_target_ids, node_id)
         del paragraph_location.container[paragraph_location.index]
@@ -1816,7 +1865,7 @@ def _apply_structural_doc_ir_operation(
                 target_id=operation.target_id,
                 operation=operation.operation,
             )
-        _validate_expected_text(operation.expected_text, run_location.node.text, operation, target_kind="run")
+        _validate_expected_text_hash(operation.expected_text_hash, run_location.node.text, operation, target_kind="run")
         run_location.paragraph.content.pop(run_location.content_index)
         run_location.paragraph.recompute_text()
         _append_unique(result.removed_target_ids, operation.target_id)
@@ -1887,7 +1936,7 @@ def _apply_structural_doc_ir_operation(
                 target_id=operation.target_id,
                 operation=operation.operation,
             )
-        _validate_expected_text(operation.expected_text, cell_location.node.text, operation, target_kind="cell")
+        _validate_expected_text_hash(operation.expected_text_hash, cell_location.node.text, operation, target_kind="cell")
         _replace_cell_paragraphs(
             cell_location.node,
             operation.text or "",
@@ -1911,14 +1960,18 @@ def _apply_structural_doc_ir_operation(
         if operation.operation == "remove_table_row":
             if row_count <= 1:
                 raise EditValidationError("Cannot remove the only table row.", code="invalid_table_shape", operation=operation.operation)
-            removed_cells = [cell for cell in table.cells if cell.row_index == row_index]
+            removed_cells = [cell for cell_row_index, _col_index, cell in table.iter_cell_positions() if cell_row_index == row_index]
+            removed_cell_ids = {id(cell) for cell in removed_cells}
             for cell in removed_cells:
                 for node_id in _collect_doc_ir_node_ids(cell):
                     _append_unique(result.removed_target_ids, node_id)
-            table.cells = [cell for cell in table.cells if cell.row_index != row_index]
-            for cell in table.cells:
-                if cell.row_index > row_index:
-                    cell.row_index -= 1
+            if removed_cell_ids:
+                table.cells = [
+                    [cell for cell in row if id(cell) not in removed_cell_ids]
+                    for row in table.cells
+                ]
+            if row_index - 1 < len(table.cells):
+                del table.cells[row_index - 1]
         else:
             values = operation.values or ["" for _ in range(col_count)]
             if len(values) != col_count:
@@ -1933,9 +1986,7 @@ def _apply_structural_doc_ir_operation(
                 )
                 for col_index in range(1, col_count + 1)
             }
-            for cell in table.cells:
-                if cell.row_index > insert_at:
-                    cell.row_index += 1
+            new_row: list[TableCellIR] = []
             for col_index, text in enumerate(values, start=1):
                 new_cell = _make_inserted_cell(
                     row_index=insert_at + 1,
@@ -1949,9 +2000,10 @@ def _apply_structural_doc_ir_operation(
                     cell_style=template_styles[col_index],
                     page_number=table_page_number,
                 )
-                table.cells.append(new_cell)
+                new_row.append(new_cell)
                 for node_id in _collect_doc_ir_node_ids(new_cell):
                     _append_unique(result.created_target_ids, node_id)
+            table.cells.insert(insert_at, new_row)
         _recompute_table_shape(table)
         _append_unique(result.modified_target_ids, table.node_id)
         result.operations_applied += 1
@@ -1967,14 +2019,19 @@ def _apply_structural_doc_ir_operation(
         if operation.operation == "remove_table_column":
             if col_count <= 1:
                 raise EditValidationError("Cannot remove the only table column.", code="invalid_table_shape", operation=operation.operation)
-            removed_cells = [cell for cell in table.cells if cell.col_index == column_index]
+            removed_cells = [cell for _row_index, col_index, cell in table.iter_cell_positions() if col_index == column_index]
+            removed_cell_ids = {id(cell) for cell in removed_cells}
             for cell in removed_cells:
                 for node_id in _collect_doc_ir_node_ids(cell):
                     _append_unique(result.removed_target_ids, node_id)
-            table.cells = [cell for cell in table.cells if cell.col_index != column_index]
-            for cell in table.cells:
-                if cell.col_index > column_index:
-                    cell.col_index -= 1
+            table.cells = [
+                [
+                    cell
+                    for cell in row
+                    if id(cell) not in removed_cell_ids
+                ]
+                for row in table.cells
+            ]
         else:
             values = operation.values or ["" for _ in range(row_count)]
             if len(values) != row_count:
@@ -1989,9 +2046,6 @@ def _apply_structural_doc_ir_operation(
                 )
                 for row_index in range(1, row_count + 1)
             }
-            for cell in table.cells:
-                if cell.col_index > insert_at:
-                    cell.col_index += 1
             for row_index, text in enumerate(values, start=1):
                 new_cell = _make_inserted_cell(
                     row_index=row_index,
@@ -2005,7 +2059,7 @@ def _apply_structural_doc_ir_operation(
                     cell_style=template_styles[row_index],
                     page_number=table_page_number,
                 )
-                table.cells.append(new_cell)
+                table.append_cell(new_cell, row_index=row_index, col_index=insert_at + 1)
                 for node_id in _collect_doc_ir_node_ids(new_cell):
                     _append_unique(result.created_target_ids, node_id)
         _recompute_table_shape(table)
@@ -2113,9 +2167,9 @@ def _refresh_doc_ir_native_paths(doc: DocIR) -> None:
             source_doc_type=doc.source_doc_type,
             parent_debug_path=parent_debug_path,
         )
-        for cell in sorted(table.cells, key=lambda c: (c.row_index, c.col_index)):
+        for row_index, col_index, cell in table.iter_cell_positions():
             cell.recompute_text()
-            cell_path = f"{table_path}.tr{cell.row_index}.tc{cell.col_index}"
+            cell_path = f"{table_path}.tr{row_index}.tc{col_index}"
             _refresh_anchor(
                 cell,
                 "cell",
@@ -3299,8 +3353,18 @@ def _apply_docx_structural_operation(doc, operation: StructuralEdit, result: _Ed
         if paragraph_location is None:
             raise EditValidationError("Paragraph does not exist.", code="target_not_found", target_kind="paragraph", target_id=operation.target_id)
         current_text = paragraph_location.paragraph.text or ""
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Paragraph text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Paragraph text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="paragraph",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         parent = paragraph_location.paragraph._p.getparent()
         parent.remove(paragraph_location.paragraph._p)
         _ensure_docx_container_has_paragraph(parent)
@@ -3335,8 +3399,18 @@ def _apply_docx_structural_operation(doc, operation: StructuralEdit, result: _Ed
         if run_location is None:
             raise EditValidationError("Run does not exist.", code="target_not_found", target_kind="run", target_id=operation.target_id)
         current_text = run_location.run.text or ""
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Run text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Run text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="run",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         run_location.run._r.getparent().remove(run_location.run._r)
         result.operations_applied += 1
         return
@@ -3368,8 +3442,18 @@ def _apply_docx_structural_operation(doc, operation: StructuralEdit, result: _Ed
         if cell_location is None:
             raise EditValidationError("Cell does not exist.", code="target_not_found", target_kind="cell", target_id=operation.target_id)
         current_text = cell_location.cell.text or ""
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Cell text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Cell text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="cell",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         _docx_set_cell_text(cell_location.cell, operation.text or "")
         result.operations_applied += 1
         return
@@ -4732,8 +4816,18 @@ def _apply_hwpx_structural_operation(archive: _EditableHwpxArchive, operation: S
         if paragraph_location is None:
             raise EditValidationError("Paragraph does not exist.", code="target_not_found", target_kind="paragraph", target_id=operation.target_id)
         current_text = _hwpx_paragraph_visible_text(paragraph_location.element)
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Paragraph text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Paragraph text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="paragraph",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         paragraph_location.parent.remove(paragraph_location.element)
         _ensure_hwpx_parent_has_paragraph(paragraph_location.parent)
         result.operations_applied += 1
@@ -4763,8 +4857,18 @@ def _apply_hwpx_structural_operation(archive: _EditableHwpxArchive, operation: S
         if run_location is None:
             raise EditValidationError("Run does not exist.", code="target_not_found", target_kind="run", target_id=operation.target_id)
         current_text = _run_text(run_location.element)
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Run text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Run text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="run",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         run_location.parent.remove(run_location.element)
         if not run_location.parent.findall(f"{_HP}run"):
             run_location.parent.append(_hwpx_el("run"))
@@ -4807,8 +4911,18 @@ def _apply_hwpx_structural_operation(archive: _EditableHwpxArchive, operation: S
         if cell_location is None:
             raise EditValidationError("Cell does not exist.", code="target_not_found", target_kind="cell", target_id=operation.target_id)
         current_text = _hwpx_cell_visible_text(cell_location.element)
-        if operation.expected_text is not None and current_text != operation.expected_text:
-            raise EditValidationError("Cell text mismatch.", code="text_mismatch", current_text=current_text, expected_text=operation.expected_text)
+        current_text_hash = _text_hash(current_text)
+        if operation.expected_text_hash is not None and current_text_hash != operation.expected_text_hash:
+            raise EditValidationError(
+                "Cell text hash mismatch.",
+                code="text_hash_mismatch",
+                target_kind="cell",
+                target_id=operation.target_id,
+                operation=operation.operation,
+                current_text=current_text,
+                expected_text_hash=operation.expected_text_hash,
+                current_text_hash=current_text_hash,
+            )
         _hwpx_set_cell_text(cell_location.element, operation.text or "")
         result.operations_applied += 1
         return

@@ -1899,7 +1899,7 @@ def _collect_style_map_from_doc_ir(doc_ir) -> StyleMap:
     def collect_table(table) -> None:
         if table.table_style is not None:
             style_map.tables[_node_debug_path(table)] = table.table_style.model_copy(deep=True)
-        for cell in table.cells:
+        for cell in table.iter_cells():
             if cell.cell_style is not None:
                 style_map.cells[_node_debug_path(cell)] = cell.cell_style.model_copy(deep=True)
             for paragraph in cell.paragraphs:
@@ -1912,7 +1912,7 @@ def _collect_style_map_from_doc_ir(doc_ir) -> StyleMap:
 
 
 def extract_styles_pdf(source: str | Path | bytes) -> StyleMap:
-    from ..pdf import parse_pdf_to_doc_ir
+    from ..pdf.pipeline import parse_pdf_to_doc_ir
 
     if isinstance(source, (str, Path)):
         doc_ir = parse_pdf_to_doc_ir(source)

@@ -63,6 +63,29 @@ PDF parsing uses the same high-level entry point:
 doc = DocIR.from_file("/path/to/file.pdf", doc_type="pdf")
 ```
 
+## Logging
+
+`document_processor` initializes a package logger named `document_processor` at
+import time. The default level is `WARNING` and logs go to the console.
+
+```python
+from document_processor import DocIR, configure_logging, get_logger
+
+configure_logging(level="INFO")
+configure_logging(level="DEBUG", log_file="logs/docir.log")
+
+doc = DocIR.from_file("/path/to/file.docx")
+
+logger = get_logger(__name__)
+logger.warning("Handled document %s", doc.doc_id)
+```
+
+You can also configure the same logger through `DocIR`:
+
+```python
+DocIR.configure_logging(level="INFO", log_file="logs/docir.log")
+```
+
 ## Custom metadata
 
 All IR models include a `.meta` field for attaching processing metadata
@@ -124,6 +147,8 @@ updated `DocIR`, written back to the native file format, or returned as bytes.
 Native write-back is supported for DOCX, HWPX, and HWP-to-HWPX output. PDF
 sources can be parsed, inspected, rendered to HTML, and edited in memory via
 `DocumentInput(doc_ir=doc)`, but they are not written back as PDF files.
+Text and style edit target kinds are inferred from `target_id`; provide
+`target_kind` only when you want the API to reject mismatched ids explicitly.
 
 ```python
 from document_processor import (
@@ -141,9 +166,8 @@ preview = read_document(document=document, start=0, limit=1)
 result = apply_document_edits(
     document=document,
     edits=[TextEdit(
-        target_kind="paragraph",
         target_id=preview.paragraphs[0].node_id,
-        expected_text="old text",
+        expected_text_hash=preview.paragraphs[0].text_hash,
         new_text="new text",
     )],
 )
@@ -184,7 +208,6 @@ result = apply_document_edits(
     document=document,
     edits=[
         StyleEdit(
-            target_kind="run",
             target_id=preview.paragraphs[0].runs[0].node_id,
             bold=True,
             color="#445566",

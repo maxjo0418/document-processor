@@ -93,7 +93,7 @@ def _iter_paragraphs(paragraphs: list[ParagraphIR]):
 
 
 def _iter_table_paragraphs(table: TableIR):
-    for cell in table.cells:
+    for cell in table.iter_cells():
         for paragraph in cell.paragraphs:
             yield paragraph
             for nested_table in paragraph.tables:
@@ -578,9 +578,9 @@ def _table_logical_col_count(table: TableIR) -> int:
     col_count = table.col_count
     if table.table_style is not None:
         col_count = max(col_count, table.table_style.col_count)
-    for cell in table.cells:
+    for _row_index, col_index, cell in table.iter_cell_positions():
         colspan = max(cell.cell_style.colspan, 1) if cell.cell_style is not None else 1
-        col_count = max(col_count, cell.col_index + colspan - 1)
+        col_count = max(col_count, col_index + colspan - 1)
     return col_count
 
 
@@ -591,13 +591,13 @@ def _table_column_widths(table: TableIR) -> list[float | None]:
 
     widths: list[float | None] = [None] * col_count
     spanned_widths: list[tuple[int, int, float]] = []
-    for cell in table.cells:
+    for _row_index, col_index, cell in table.iter_cell_positions():
         if cell.cell_style is None:
             continue
         width_pt = _non_negative_pt(cell.cell_style.width_pt)
         if width_pt is None:
             continue
-        start = max(cell.col_index - 1, 0)
+        start = max(col_index - 1, 0)
         if start >= col_count:
             continue
         colspan = min(max(cell.cell_style.colspan, 1), col_count - start)
@@ -815,10 +815,18 @@ def _render_table(
     if not table.cells:
         return f'<table data-node-id="{escape(table.node_id or "")}" style="{_table_css(table, para_style)}"></table>'
 
+    positioned_cells = list(table.iter_cell_positions())
     covered: set[tuple[int, int]] = set()
-    cells_by_pos = {(cell.row_index, cell.col_index): cell for cell in table.cells}
-    max_row = max(cell.row_index for cell in table.cells)
-    max_col = max(cell.col_index for cell in table.cells)
+    cells_by_pos = {(row_index, col_index): cell for row_index, col_index, cell in positioned_cells}
+    max_row = table.row_count
+    if table.table_style is not None:
+        max_row = max(max_row, table.table_style.row_count)
+    max_col = _table_logical_col_count(table)
+    for row_index, col_index, cell in positioned_cells:
+        rowspan = max(cell.cell_style.rowspan, 1) if cell.cell_style is not None else 1
+        colspan = max(cell.cell_style.colspan, 1) if cell.cell_style is not None else 1
+        max_row = max(max_row, row_index + rowspan - 1)
+        max_col = max(max_col, col_index + colspan - 1)
 
     lines = [f'<table data-node-id="{escape(table.node_id or "")}" style="{_table_css(table, para_style)}">']
     lines.extend(_render_colgroup(table))

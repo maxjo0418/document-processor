@@ -5,13 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..logging_config import get_logger
 from ..models import DocIR, PageInfo
 from .config import PdfParseConfig
-from .enhancement import enrich_pdf_table_borders
+from .diagnostics import detect_pdf_table_warnings, log_pdf_table_warnings
+from .enhancement.image_fallback import replace_low_resolution_pdf_image_assets
 from .odl import build_doc_ir_from_odl_result, preprocess_dotted_rule_splits, run_odl_json
 from .parsing import PageClass, PdfProfile, decide_page, probe_pdf
 from .preview.context import build_pdf_preview_context, collect_pdfium_visual_block_candidates
 from .preview.models import PdfPreviewContext
+
+logger = get_logger(__name__)
 
 
 def parse_pdf_to_doc_ir(
@@ -51,35 +55,38 @@ def _parse_pdf_to_doc_ir_with_preview(
     profile = probe_pdf(source_path)
     if profile is None:
         raise RuntimeError("PDF probe failed before ODL parsing.")
+    logger.debug(
+        "PDF probe profile for %s: page_count=%d text_readable=%s readable_page_ratio=%.3f",
+        source_path,
+        profile.page_count,
+        profile.text_readable,
+        profile.text_readable_page_ratio,
+    )
 
-    page_decisions = [
-        decide_page(page_profile, resolved_config.triage)
-        for page_profile in profile.page_profiles
-    ]
+    selected_pages = _selected_pages(resolved_config.pages, page_count=profile.page_count)
+    page_decisions = [decide_page(page_profile) for page_profile in profile.page_profiles]
     structured_pages = [
         decision.page_number
         for decision in page_decisions
         if decision.page_class == PageClass.STRUCTURED
+        and (selected_pages is None or decision.page_number in selected_pages)
     ]
 
     resolved_doc_cls = doc_cls or DocIR
     preview_context = PdfPreviewContext()
     if structured_pages:
+        logger.info("Parsing %d structured PDF page(s) from %s", len(structured_pages), source_path)
         raw_document = run_odl_json(
             source_path,
-            {
-                **resolved_config.odl.model_dump(),
-                "pages": structured_pages,
-                # Prefer embedded image data for the DocIR path so ImageAsset entries
-                # can be materialized without depending on sidecar files on disk.
-                "image_output": resolved_config.odl.image_output or "embedded",
-            },
+            resolved_config.to_odl_config(pages=structured_pages, for_doc_ir=True),
         )
         preprocess_dotted_rule_splits(
             raw_document,
             pdf_path=source_path,
             page_numbers=structured_pages,
         )
+        table_warnings = detect_pdf_table_warnings(raw_document, source_path=source_path)
+        log_pdf_table_warnings(table_warnings, logger)
         # The dotted-rule pass mutates raw table structure. Build preview context
         # after it so table grid hints match the final DocIR TableIR shape.
         preview_context = build_pdf_preview_context(raw_document)
@@ -97,6 +104,7 @@ def _parse_pdf_to_doc_ir_with_preview(
             **doc_kwargs,
         )
     else:
+        logger.info("No structured PDF pages selected for %s; returning empty DocIR", source_path)
         resolved_doc_id = doc_id or source_path.stem
         doc_ir = resolved_doc_cls(
             doc_id=resolved_doc_id,
@@ -108,21 +116,41 @@ def _parse_pdf_to_doc_ir_with_preview(
             **doc_kwargs,
         )
 
-    _apply_probe_page_sizes(doc_ir, profile=profile)
-    if resolved_config.infer_table_borders:
-        # Parse-time border inference is optional because it rasterizes pages and
-        # is noticeably more expensive than the base ODL conversion path.
-        enrich_pdf_table_borders(
-            doc_ir,
-            pdf_path=source_path,
-            dpi=resolved_config.table_border_dpi,
-        )
+    _apply_probe_page_sizes(doc_ir, profile=profile, selected_pages=selected_pages)
+    replace_low_resolution_pdf_image_assets(doc_ir, source_path)
     return doc_ir, preview_context
 
 
-def _apply_probe_page_sizes(doc_ir: DocIR, *, profile: PdfProfile) -> None:
+def _selected_pages(pages: str | list[int] | None, *, page_count: int) -> set[int] | None:
+    if pages is None:
+        return None
+    if isinstance(pages, list):
+        selected = set(pages)
+    else:
+        selected = set()
+        for part in pages.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                start_text, end_text = part.split("-", 1)
+                start = int(start_text.strip())
+                end = int(end_text.strip())
+                if start > end:
+                    raise ValueError(f"Invalid page range: {part}")
+                selected.update(range(start, end + 1))
+            else:
+                selected.add(int(part))
+    if any(page < 1 or page > page_count for page in selected):
+        raise ValueError(f"pages must be within 1-{page_count}")
+    return selected
+
+
+def _apply_probe_page_sizes(doc_ir: DocIR, *, profile: PdfProfile, selected_pages: set[int] | None = None) -> None:
     page_map = {page.page_number: page for page in doc_ir.pages}
     for page_profile in profile.page_profiles:
+        if selected_pages is not None and page_profile.page_number not in selected_pages:
+            continue
         page = page_map.get(page_profile.page_number)
         if page is None:
             page = PageInfo(page_number=page_profile.page_number)

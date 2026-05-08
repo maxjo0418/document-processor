@@ -104,41 +104,16 @@ def _build_odl_command(
         "--quiet",
     ]
 
-    _append_option(command, "--password", config.get("password"))
-    _append_option(
-        command,
-        "--content-safety-off",
-        _normalize_csv_option(config.get("content_safety_off")),
-    )
-    _append_flag(command, "--sanitize", config.get("sanitize", False))
-    _append_flag(command, "--keep-line-breaks", config.get("keep_line_breaks", False))
-    _append_flag(command, "--preserve-whitespace", config.get("preserve_whitespace", False))
-    _append_option(command, "--replace-invalid-chars", config.get("replace_invalid_chars"))
-    _append_flag(command, "--use-struct-tree", config.get("use_struct_tree", False))
-    _append_option(command, "--table-method", config.get("table_method"))
-    _append_option(command, "--reading-order", config.get("reading_order", "xycut"))
-    _append_option(command, "--markdown-page-separator", config.get("markdown_page_separator"))
-    _append_option(command, "--text-page-separator", config.get("text_page_separator"))
-    _append_option(command, "--html-page-separator", config.get("html_page_separator"))
+    _append_option(command, "--table-method", "cluster")
+    _append_option(command, "--reading-order", "xycut")
     _append_option(command, "--image-output", config.get("image_output"))
-    _append_option(command, "--image-format", config.get("image_format"))
-    _append_option(command, "--image-dir", config.get("image_dir"))
+    _append_option(command, "--image-pixel-size", _image_pixel_size_from_config(config))
     _append_option(command, "--pages", pages)
     _append_flag(
         command,
         "--include-header-footer",
         config.get("include_header_footer", False),
     )
-    _append_flag(
-        command,
-        "--detect-strikethrough",
-        config.get("detect_strikethrough", False),
-    )
-    _append_option(command, "--hybrid", config.get("hybrid"))
-    _append_option(command, "--hybrid-mode", config.get("hybrid_mode"))
-    _append_option(command, "--hybrid-url", config.get("hybrid_url"))
-    _append_option(command, "--hybrid-timeout", config.get("hybrid_timeout"))
-    _append_flag(command, "--hybrid-fallback", config.get("hybrid_fallback", False))
     return command
 
 
@@ -190,12 +165,12 @@ def _normalize_formats(formats: str | Iterable[str]) -> list[str]:
     return deduped
 
 
-def _normalize_csv_option(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, (list, tuple)):
-        return ",".join(str(item) for item in value)
-    return str(value)
+def _image_pixel_size_from_config(config: dict[str, Any]) -> int | float | None:
+    return {
+        "standard": None,
+        "high": 2400,
+        "max": 4000,
+    }.get(config.get("image_quality"))
 
 
 def _format_suffix(output_format: str) -> str:

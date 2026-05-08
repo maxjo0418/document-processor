@@ -56,12 +56,12 @@ class StyleExtractorTests(unittest.TestCase):
                             bbox=BoundingBox(left_pt=10, bottom_pt=20, right_pt=110, top_pt=120),
                             table_style=TableStyleInfo(row_count=1, col_count=1, width_pt=120.0, height_pt=48.0),
                             cells=[
-                                TableCellIR(
-                                    **_pdf_node_kwargs("cell", "s1.p2.r1.tbl1.tr1.tc1"),
-                                    row_index=1,
-                                    col_index=1,
-                                    cell_style=CellStyleInfo(rowspan=1, colspan=1, width_pt=120.0, height_pt=48.0),
-                                )
+                                [
+                                    TableCellIR(
+                                        **_pdf_node_kwargs("cell", "s1.p2.r1.tbl1.tr1.tc1"),
+                                        cell_style=CellStyleInfo(rowspan=1, colspan=1, width_pt=120.0, height_pt=48.0),
+                                    )
+                                ]
                             ],
                         )
                     ],
@@ -69,7 +69,7 @@ class StyleExtractorTests(unittest.TestCase):
             ],
         )
 
-        with patch("document_processor.pdf.parse_pdf_to_doc_ir", return_value=doc):
+        with patch("document_processor.pdf.pipeline.parse_pdf_to_doc_ir", return_value=doc):
             style_map = extract_styles("sample.pdf", doc_type="pdf")
 
         self.assertEqual(style_map.paragraphs["s1.p1"].align, "center")
