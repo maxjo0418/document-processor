@@ -200,7 +200,8 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual(semantic.blocks[1].node_id, table.node_id)
         self.assertEqual(semantic.blocks[1].debug_path, table.native_anchor.debug_path)
         self.assertEqual(semantic.blocks[1].bbox.right_pt, 210)
-        self.assertIn("| col1 | col2 |", semantic.blocks[1].text)
+        self.assertIn("|  |  |", semantic.blocks[1].text)
+        self.assertNotIn("col1", semantic.blocks[1].text)
         self.assertIn("| A1 | B1 |", semantic.blocks[1].text)
         self.assertEqual(semantic.blocks[1].previous_table_id, "tbl_previous")
         self.assertEqual(semantic.blocks[1].next_table_id, "tbl_next")
@@ -699,7 +700,8 @@ class DocumentIRTests(unittest.TestCase):
             ],
             [(1, 1, "Merged"), (1, 3, "Right"), (2, 3, "Bottom")],
         )
-        self.assertIn("| col1 | col2 | col3 |", markdown)
+        self.assertIn("|  |  |  |", markdown)
+        self.assertNotIn("col1", markdown)
         self.assertIn("| Merged | Merged | Right |", markdown)
         self.assertIn("| Merged | Merged | Bottom |", markdown)
 
@@ -767,7 +769,8 @@ class DocumentIRTests(unittest.TestCase):
 
         self.assertIn(f"| Outer | [tbl:{nested_path}] |", markdown)
         self.assertIn(f"[tbl:{nested_path}]", markdown)
-        self.assertIn("| col1 |", markdown)
+        self.assertIn("|  |", markdown)
+        self.assertNotIn("col1", markdown)
         self.assertIn("| Inner |", markdown)
 
     def test_docx_nested_tables_are_parsed(self) -> None:

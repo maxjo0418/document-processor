@@ -965,10 +965,9 @@ def _render_table_markdown(
         return ""
 
     nested_tables: OrderedDict[str, TableIR] = OrderedDict()
-    headers = [f"col{idx}" for idx in range(1, max_col + 1)]
     lines = [
-        f"| {' | '.join(headers)} |",
-        f"| {' | '.join('---' for _ in headers)} |",
+        f"| {' | '.join('' for _ in range(max_col))} |",
+        f"| {' | '.join('---' for _ in range(max_col))} |",
     ]
 
     for row in grid:
