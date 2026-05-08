@@ -15,7 +15,7 @@ from document_processor import (
     TextAnnotation,
     render_review_html,
 )
-from document_processor.models import ImageAsset, ImageIR, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
+from document_processor.models import ImageAsset, ImageIR, NativeAnchor, PageInfo, ParagraphIR, RunIR, TableCellIR, TableIR
 from document_processor.style_types import CellStyleInfo, ColumnLayoutInfo, ListItemInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
 from document_processor.pdf.odl.adapter import _pdf_node_kwargs
 
@@ -31,6 +31,74 @@ def _render_review_html_for_doc(doc: DocIR, annotations: list[TextAnnotation] | 
 
 
 class HtmlExporterTests(unittest.TestCase):
+    def test_export_html_preserves_spans_for_native_covered_slot_duplicates(self) -> None:
+        def paragraph(text: str) -> ParagraphIR:
+            return ParagraphIR(content=[RunIR(text=text)])
+
+        def cell(path: str, text: str, style: CellStyleInfo | None = None) -> TableCellIR:
+            table_cell = TableCellIR(
+                native_anchor=NativeAnchor(
+                    node_kind="cell",
+                    debug_path=path,
+                    structural_path=path,
+                ),
+                cell_style=style,
+                paragraphs=[paragraph(text)],
+            )
+            table_cell.recompute_text()
+            return table_cell
+
+        table = TableIR(
+            row_count=2,
+            col_count=3,
+            cells=[
+                [
+                    cell("s1.p1.r1.tbl1.tr1.tc1", "Merged", CellStyleInfo(rowspan=2, colspan=2)),
+                    cell("s1.p1.r1.tbl1.tr1.tc2", "Merged"),
+                    cell("s1.p1.r1.tbl1.tr1.tc3", "Right"),
+                ],
+                [
+                    cell("s1.p1.r1.tbl1.tr2.tc1", "Merged"),
+                    cell("s1.p1.r1.tbl1.tr2.tc2", "Merged"),
+                    cell("s1.p1.r1.tbl1.tr2.tc3", "Bottom"),
+                ],
+            ],
+        )
+        doc = DocIR(paragraphs=[ParagraphIR(content=[table])])
+
+        self.assertIs(table.cells[0][1], table.cells[0][0])
+        self.assertIs(table.cells[1][0], table.cells[0][0])
+        self.assertIs(table.cells[1][1], table.cells[0][0])
+        for rendered in (doc.to_html(), _render_review_html_for_doc(doc)):
+            self.assertIn('colspan="2"', rendered)
+            self.assertIn('rowspan="2"', rendered)
+            self.assertEqual(rendered.count("<td"), 3)
+            self.assertEqual(rendered.count("Merged"), 1)
+
+    def test_export_html_preserves_docx_vertical_merges_from_file(self) -> None:
+        doc = DocIR.from_file(THIS_DIR / "doc_samples/new_test/style_test_sample.docx")
+
+        def iter_tables(paragraph: ParagraphIR):
+            for table in paragraph.tables:
+                yield table
+                for cell in table.iter_cells():
+                    for cell_paragraph in cell.paragraphs:
+                        yield from iter_tables(cell_paragraph)
+
+        tables = [table for paragraph in doc.paragraphs for table in iter_tables(paragraph)]
+        merged_tables = [
+            table
+            for table in tables
+            if any(cell.cell_style and cell.cell_style.rowspan > 1 for cell in table.iter_cells())
+        ]
+
+        self.assertEqual(len(merged_tables), 2)
+        for table in merged_tables:
+            self.assertIs(table.cells[2][1], table.cells[1][1])
+
+        html = doc.to_html()
+        self.assertEqual(html.count('rowspan="2"'), 2)
+
     def test_export_html_renders_run_and_paragraph_styles(self) -> None:
         doc = DocIR(doc_id="sample",
             paragraphs=[

@@ -1736,6 +1736,25 @@ def extract_styles_docx(
     tbl_counter = 0
 
     def _extract_docx_table_styles(table, table_id: str) -> None:
+        from docx.oxml.ns import qn
+        from docx.table import _Cell
+
+        def grid_span(tc) -> int:
+            tc_pr = tc.find(qn("w:tcPr"))
+            grid_span_el = tc_pr.find(qn("w:gridSpan")) if tc_pr is not None else None
+            if grid_span_el is None:
+                return 1
+            try:
+                return max(int(grid_span_el.get(qn("w:val"), "1")), 1)
+            except (TypeError, ValueError):
+                return 1
+
+        def iter_row_cells(row):
+            col_index = getattr(row, "grid_cols_before", 0) + 1
+            for tc in row._tr.tc_lst:
+                yield col_index, _Cell(tc, table)
+                col_index += grid_span(tc)
+
         vmerge_starts: dict[tuple[str, int], str] = {}
         table_style_id = table.style.style_id if table.style is not None else None
         table_border_defaults = _docx_table_style_border_defaults(
@@ -1768,7 +1787,7 @@ def extract_styles_docx(
                     tr_height.get(qn("w:val")),
                     "dxa",
                 )
-            for tc_idx, cell in enumerate(row.cells, start=1):
+            for tc_idx, cell in iter_row_cells(row):
                 cell_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}"
 
                 tc_pr = cell._tc.find(qn("w:tcPr"))
