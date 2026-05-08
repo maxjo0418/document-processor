@@ -7,6 +7,7 @@ from collections import OrderedDict
 import hashlib
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar
 
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field, computed_field
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
 from .logging_config import configure_logging, get_logger
-from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo, normalize_list_marker
 
 T = TypeVar("T", bound=BaseModel)
 NodeKind: TypeAlias = Literal["paragraph", "run", "image", "table", "cell"]
@@ -29,6 +30,7 @@ _NODE_ID_PREFIXES: dict[NodeKind, str] = {
     "table": "tbl",
     "cell": "cell",
 }
+_TABLE_CELL_PATH_RE = re.compile(r"(?:^|\.)tr(?P<row>\d+)\.tc(?P<col>\d+)(?:\.|$)")
 
 
 def _stable_node_id(kind: NodeKind, structural_path: str) -> str:
@@ -383,6 +385,32 @@ def _cell_matches_filler(candidate: TableCellIR, origin: TableCellIR) -> bool:
     return _cell_filler_signature(candidate) == _cell_filler_signature(origin)
 
 
+def _cell_native_grid_position(cell: TableCellIR) -> tuple[int, int] | None:
+    if cell.native_anchor is None:
+        return None
+    for path in (cell.native_anchor.structural_path, cell.native_anchor.debug_path):
+        if not path:
+            continue
+        matches = list(_TABLE_CELL_PATH_RE.finditer(path))
+        if not matches:
+            continue
+        match = matches[-1]
+        return int(match.group("row")), int(match.group("col"))
+    return None
+
+
+def _cell_is_covered_slot_filler(
+    candidate: TableCellIR,
+    origin: TableCellIR,
+    *,
+    row_index: int,
+    col_index: int,
+) -> bool:
+    if _cell_matches_filler(candidate, origin):
+        return True
+    return _cell_native_grid_position(candidate) == (row_index, col_index)
+
+
 def _table_cell_origin_positions(cells: list[list[TableCellIR]]):
     occupied: dict[tuple[int, int], TableCellIR] = {}
     seen: set[tuple[str, object]] = set()
@@ -392,7 +420,12 @@ def _table_cell_origin_positions(cells: list[list[TableCellIR]]):
         while cell_index < len(row):
             cell = row[cell_index]
             covering_cell = occupied.get((row_index, col_index))
-            if covering_cell is not None and _cell_matches_filler(cell, covering_cell):
+            if covering_cell is not None and _cell_is_covered_slot_filler(
+                cell,
+                covering_cell,
+                row_index=row_index,
+                col_index=col_index,
+            ):
                 col_index += 1
                 cell_index += 1
                 continue
@@ -857,7 +890,8 @@ def _paragraph_list_marker_prefix(paragraph: ParagraphIR) -> str:
     if list_info is None or not list_info.marker:
         return ""
     indent = "  " * max(list_info.level, 0)
-    return f"{indent}{list_info.marker} "
+    marker = normalize_list_marker(list_info.marker, list_info.marker_type) or ""
+    return f"{indent}{marker} "
 
 
 def _paragraph_markdown_text(
@@ -931,10 +965,9 @@ def _render_table_markdown(
         return ""
 
     nested_tables: OrderedDict[str, TableIR] = OrderedDict()
-    headers = [f"col{idx}" for idx in range(1, max_col + 1)]
     lines = [
-        f"| {' | '.join(headers)} |",
-        f"| {' | '.join('---' for _ in headers)} |",
+        f"| {' | '.join('' for _ in range(max_col))} |",
+        f"| {' | '.join('---' for _ in range(max_col))} |",
     ]
 
     for row in grid:

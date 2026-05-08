@@ -358,6 +358,7 @@ def apply_style_map_to_doc_ir(doc_ir: "DocIR", style_map: "StyleMap | None") -> 
                         run.run_style = style_map.runs[run_path]
                 for nested_table in paragraph.tables:
                     _apply_table_styles(nested_table)
+        table.expand_merged_cells()
 
     for paragraph in doc_ir.paragraphs:
         paragraph_path = _node_anchor_path(paragraph)

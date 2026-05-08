@@ -22,6 +22,7 @@ from document_processor import (
     DocumentInput,
     HwpxDocument,
     ImageIR,
+    NativeAnchor,
     PageInfo,
     ParaStyleInfo,
     ParagraphIR,
@@ -36,6 +37,7 @@ from document_processor import (
     get_logger,
     read_document,
 )
+from document_processor.builder import apply_style_map_to_doc_ir
 from document_processor.core.hwpx_structured_exporter import export_hwpx_structured_mapping
 import document_processor.models as document_models
 
@@ -198,7 +200,8 @@ class DocumentIRTests(unittest.TestCase):
         self.assertEqual(semantic.blocks[1].node_id, table.node_id)
         self.assertEqual(semantic.blocks[1].debug_path, table.native_anchor.debug_path)
         self.assertEqual(semantic.blocks[1].bbox.right_pt, 210)
-        self.assertIn("| col1 | col2 |", semantic.blocks[1].text)
+        self.assertIn("|  |  |", semantic.blocks[1].text)
+        self.assertNotIn("col1", semantic.blocks[1].text)
         self.assertIn("| A1 | B1 |", semantic.blocks[1].text)
         self.assertEqual(semantic.blocks[1].previous_table_id, "tbl_previous")
         self.assertEqual(semantic.blocks[1].next_table_id, "tbl_next")
@@ -494,6 +497,28 @@ class DocumentIRTests(unittest.TestCase):
 
         self.assertGreater(len(parsed.paragraphs), 0)
 
+    def test_from_file_docx_normalizes_symbol_font_bullet_markers(self) -> None:
+        docx_path = THIS_DIR / "doc_samples" / "new_test" / "style_test_sample.docx"
+
+        parsed = DocIR.from_file(docx_path, skip_empty=True)
+
+        bullet_paragraphs = [
+            paragraph
+            for paragraph in parsed.paragraphs
+            if paragraph.para_style is not None
+            and paragraph.para_style.list_info is not None
+            and paragraph.para_style.list_info.marker_type == "bullet"
+        ]
+        self.assertEqual([paragraph.para_style.list_info.marker for paragraph in bullet_paragraphs], ["•", "•", "•"])
+
+        read_result = read_document(document=DocumentInput(doc_ir=parsed))
+        bullet_display_texts = [
+            paragraph.display_text
+            for paragraph in read_result.paragraphs
+            if paragraph.list_info is not None and paragraph.list_info.marker_type == "bullet"
+        ]
+        self.assertEqual(bullet_display_texts, ["• Bullet 1", "• Bullet 2\nsoft break", "• Bullet 3"])
+
     def test_from_file_hwpx_extracts_number_and_bullet_headings(self) -> None:
         hwpx_bytes_io = BytesIO()
         with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:
@@ -675,9 +700,60 @@ class DocumentIRTests(unittest.TestCase):
             ],
             [(1, 1, "Merged"), (1, 3, "Right"), (2, 3, "Bottom")],
         )
-        self.assertIn("| col1 | col2 | col3 |", markdown)
+        self.assertIn("|  |  |  |", markdown)
+        self.assertNotIn("col1", markdown)
         self.assertIn("| Merged | Merged | Right |", markdown)
         self.assertIn("| Merged | Merged | Bottom |", markdown)
+
+    def test_apply_style_map_expands_native_covered_slot_duplicates(self) -> None:
+        def paragraph(text: str) -> ParagraphIR:
+            paragraph_ir = ParagraphIR(content=[RunIR(text=text)])
+            paragraph_ir.recompute_text()
+            return paragraph_ir
+
+        def cell(path: str, text: str) -> TableCellIR:
+            table_cell = TableCellIR(
+                native_anchor=NativeAnchor(
+                    node_kind="cell",
+                    debug_path=path,
+                    structural_path=path,
+                ),
+                paragraphs=[paragraph(text)],
+            )
+            table_cell.recompute_text()
+            return table_cell
+
+        table = TableIR(
+            row_count=2,
+            col_count=2,
+            native_anchor=NativeAnchor(
+                node_kind="table",
+                debug_path="s1.p1.r1.tbl1",
+                structural_path="s1.p1.r1.tbl1",
+            ),
+            cells=[
+                [cell("s1.p1.r1.tbl1.tr1.tc1", "Merged"), cell("s1.p1.r1.tbl1.tr1.tc2", "Right")],
+                [cell("s1.p1.r1.tbl1.tr2.tc1", "Merged"), cell("s1.p1.r1.tbl1.tr2.tc2", "Bottom")],
+            ],
+        )
+        doc = DocIR(paragraphs=[ParagraphIR(content=[table])])
+        style_map = StyleMap(
+            tables={"s1.p1.r1.tbl1": TableStyleInfo(row_count=2, col_count=2)},
+            cells={"s1.p1.r1.tbl1.tr1.tc1": CellStyleInfo(rowspan=2)},
+        )
+
+        apply_style_map_to_doc_ir(doc, style_map)
+
+        self.assertIs(table.cells[1][0], table.cells[0][0])
+        self.assertEqual(
+            [
+                (row_index, col_index, cell.paragraphs[0].content[0].text)
+                for row_index, col_index, cell in table.iter_cell_positions()
+            ],
+            [(1, 1, "Merged"), (1, 2, "Right"), (2, 2, "Bottom")],
+        )
+        self.assertIn("| Merged | Right |", table.markdown)
+        self.assertIn("| Merged | Bottom |", table.markdown)
 
     def test_table_markdown_appends_nested_tables_by_reference(self) -> None:
         doc = DocIR.from_mapping(
@@ -693,7 +769,8 @@ class DocumentIRTests(unittest.TestCase):
 
         self.assertIn(f"| Outer | [tbl:{nested_path}] |", markdown)
         self.assertIn(f"[tbl:{nested_path}]", markdown)
-        self.assertIn("| col1 |", markdown)
+        self.assertIn("|  |", markdown)
+        self.assertNotIn("col1", markdown)
         self.assertIn("| Inner |", markdown)
 
     def test_docx_nested_tables_are_parsed(self) -> None:

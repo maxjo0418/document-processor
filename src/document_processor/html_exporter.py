@@ -7,7 +7,7 @@ from html import escape
 import re
 
 from .models import DocIR, ImageIR, PageInfo, ParagraphContentNode, ParagraphIR, RunIR, TableCellIR, TableIR, _node_debug_path
-from .style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, RunStyleInfo
+from .style_types import CellStyleInfo, ColumnLayoutInfo, ParaStyleInfo, RunStyleInfo, normalize_list_marker
 
 _NATIVE_CELL_ALIGNMENT_DOC_TYPES = {"docx", "hwpx", "hwp"}
 
@@ -224,7 +224,7 @@ def _list_marker_html(style: ParaStyleInfo | None) -> str:
         return ""
     level = max(list_info.level, 0)
     min_width = max(12.0, 14.0 + level * 8.0)
-    marker = escape(list_info.marker)
+    marker = escape(normalize_list_marker(list_info.marker, list_info.marker_type) or "")
     return (
         f'<span class="document-list-marker" '
         f'style="display:inline-block;min-width:{min_width:.1f}pt;margin-right:4.0pt;white-space:nowrap">'

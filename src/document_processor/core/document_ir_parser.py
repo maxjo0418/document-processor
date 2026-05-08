@@ -557,6 +557,25 @@ def _parse_docx_table(
     Paragraph,
     Table,
 ) -> TableIR:
+    from docx.oxml.ns import qn
+    from docx.table import _Cell
+
+    def grid_span(tc) -> int:
+        tc_pr = tc.find(qn("w:tcPr"))
+        grid_span_el = tc_pr.find(qn("w:gridSpan")) if tc_pr is not None else None
+        if grid_span_el is None:
+            return 1
+        try:
+            return max(int(grid_span_el.get(qn("w:val"), "1")), 1)
+        except (TypeError, ValueError):
+            return 1
+
+    def iter_row_cells(row):
+        col_index = getattr(row, "grid_cols_before", 0) + 1
+        for tc in row._tr.tc_lst:
+            yield col_index, _Cell(tc, table)
+            col_index += grid_span(tc)
+
     table_ir = TableIR(
         **_node_kwargs(
             "table",
@@ -568,7 +587,7 @@ def _parse_docx_table(
     )
 
     for tr_idx, row in enumerate(table.rows, start=1):
-        for tc_idx, cell in enumerate(row.cells, start=1):
+        for tc_idx, cell in iter_row_cells(row):
             cell_id = f"{table_id}.tr{tr_idx}.tc{tc_idx}"
             cell_ir = TableCellIR(
                 **_node_kwargs(
