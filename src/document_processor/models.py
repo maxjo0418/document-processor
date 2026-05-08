@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, computed_field
 
 from .io_utils import TemporarySourcePath, coerce_source_to_supported_value, get_source_name, infer_doc_type
 from .logging_config import configure_logging, get_logger
-from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo
+from .style_types import CellStyleInfo, ObjectPlacementInfo, ParaStyleInfo, RunStyleInfo, TableStyleInfo, normalize_list_marker
 
 T = TypeVar("T", bound=BaseModel)
 NodeKind: TypeAlias = Literal["paragraph", "run", "image", "table", "cell"]
@@ -890,7 +890,8 @@ def _paragraph_list_marker_prefix(paragraph: ParagraphIR) -> str:
     if list_info is None or not list_info.marker:
         return ""
     indent = "  " * max(list_info.level, 0)
-    return f"{indent}{list_info.marker} "
+    marker = normalize_list_marker(list_info.marker, list_info.marker_type) or ""
+    return f"{indent}{marker} "
 
 
 def _paragraph_markdown_text(

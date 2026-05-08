@@ -45,6 +45,7 @@ from .edit_engine import (
 from .io_utils import SourceDocType, infer_doc_type
 from .models import DocIR, ImageIR, NativeAnchor, ParagraphIR, RunIR, TableCellIR, TableIR, _anchored_node_id
 from .pdf.annotations import resolve_pdf_annotations_for_doc, write_pdf_annotations
+from .style_types import normalize_list_marker
 
 _WRITEBACK_SOURCE_TYPES = {"docx", "hwpx", "hwp"}
 _OUTPUT_FILENAME_SUFFIXES = {".docx", ".hwpx"}
@@ -1720,7 +1721,8 @@ def _paragraph_display_text(paragraph: ParagraphIR) -> str:
     if list_info is None or not list_info.marker:
         return text
     indent = "  " * max(list_info.level, 0)
-    return f"{indent}{list_info.marker} {text}".rstrip()
+    marker = normalize_list_marker(list_info.marker, list_info.marker_type) or ""
+    return f"{indent}{marker} {text}".rstrip()
 
 
 def _run_contexts(paragraph: ParagraphIR) -> list[DocumentRunContext]:

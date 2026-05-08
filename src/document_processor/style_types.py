@@ -4,6 +4,54 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+_PRIVATE_USE_RANGES = (
+    range(0xE000, 0xF900),
+    range(0xF0000, 0x100000),
+    range(0x100000, 0x110000),
+)
+_BULLET_MARKER_MAP = {
+    "\u00b7": "\u2022",
+    "\uf06c": "\u2022",
+    "\uf06e": "\u25aa",
+    "\uf075": "\u25c6",
+    "\uf0a7": "\u25aa",
+    "\uf0b7": "\u2022",
+    "\uf0d8": "\u25e6",
+    "\uf0fc": "\u2713",
+}
+
+
+def _is_private_use_char(char: str) -> bool:
+    codepoint = ord(char)
+    return any(codepoint in private_range for private_range in _PRIVATE_USE_RANGES)
+
+
+def normalize_bullet_marker(marker: str | None) -> str:
+    """Return a browser-safe Unicode bullet for Symbol/Wingdings marker text."""
+    if not marker:
+        return "\u2022"
+
+    stripped = marker.strip()
+    if not stripped:
+        return "\u2022"
+    if stripped in _BULLET_MARKER_MAP:
+        return _BULLET_MARKER_MAP[stripped]
+
+    translated = "".join(_BULLET_MARKER_MAP.get(char, char) for char in stripped)
+    if translated != stripped:
+        return translated
+    if any(_is_private_use_char(char) for char in stripped):
+        return "\u2022"
+    return stripped
+
+
+def normalize_list_marker(marker: str | None, marker_type: str | None = None) -> str | None:
+    if marker is None:
+        return None
+    if (marker_type or "").lower() == "bullet" or any(_is_private_use_char(char) for char in marker):
+        return normalize_bullet_marker(marker)
+    return marker
+
 
 class RunStyleInfo(BaseModel):
     """Text-level formatting for a single run."""
@@ -127,4 +175,6 @@ __all__ = [
     "CellStyleInfo",
     "TableStyleInfo",
     "StyleMap",
+    "normalize_bullet_marker",
+    "normalize_list_marker",
 ]

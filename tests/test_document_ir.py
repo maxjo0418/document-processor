@@ -496,6 +496,28 @@ class DocumentIRTests(unittest.TestCase):
 
         self.assertGreater(len(parsed.paragraphs), 0)
 
+    def test_from_file_docx_normalizes_symbol_font_bullet_markers(self) -> None:
+        docx_path = THIS_DIR / "doc_samples" / "new_test" / "style_test_sample.docx"
+
+        parsed = DocIR.from_file(docx_path, skip_empty=True)
+
+        bullet_paragraphs = [
+            paragraph
+            for paragraph in parsed.paragraphs
+            if paragraph.para_style is not None
+            and paragraph.para_style.list_info is not None
+            and paragraph.para_style.list_info.marker_type == "bullet"
+        ]
+        self.assertEqual([paragraph.para_style.list_info.marker for paragraph in bullet_paragraphs], ["•", "•", "•"])
+
+        read_result = read_document(document=DocumentInput(doc_ir=parsed))
+        bullet_display_texts = [
+            paragraph.display_text
+            for paragraph in read_result.paragraphs
+            if paragraph.list_info is not None and paragraph.list_info.marker_type == "bullet"
+        ]
+        self.assertEqual(bullet_display_texts, ["• Bullet 1", "• Bullet 2\nsoft break", "• Bullet 3"])
+
     def test_from_file_hwpx_extracts_number_and_bullet_headings(self) -> None:
         hwpx_bytes_io = BytesIO()
         with zipfile.ZipFile(hwpx_bytes_io, "w") as zf:

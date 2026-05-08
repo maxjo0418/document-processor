@@ -559,6 +559,22 @@ class HtmlExporterTests(unittest.TestCase):
             self.assertIn(">a)</span>", html)
             self.assertIn("Nested list item", html)
 
+    def test_export_html_normalizes_private_use_bullet_markers(self) -> None:
+        doc = DocIR(paragraphs=[
+                ParagraphIR(
+                    para_style=ParaStyleInfo(
+                        list_info=ListItemInfo(list_id="list-1", level=0, marker="\uf06c", marker_type="bullet")
+                    ),
+                    content=[RunIR(text="Bullet list item")],
+                )
+            ],
+        )
+
+        for html in (doc.to_html(), _render_review_html_for_doc(doc)):
+            self.assertIn(">•</span>", html)
+            self.assertIn("Bullet list item", html)
+            self.assertNotIn("\uf06c", html)
+
     def test_export_html_clamps_negative_first_line_indent_inside_table_cells(self) -> None:
         doc = DocIR(paragraphs=[
                 ParagraphIR(content=[

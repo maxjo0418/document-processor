@@ -19,6 +19,7 @@ from ..style_types import (
     RunStyleInfo,
     StyleMap,
     TableStyleInfo,
+    normalize_bullet_marker,
 )
 from .hwp_converter import convert_hwp_to_hwpx_bytes
 
@@ -163,13 +164,7 @@ def _circled_digit_counter(value: int) -> str:
 
 
 def _normalize_bullet_marker(value: str | None) -> str:
-    if not value:
-        return "\u2022"
-    return {
-        "\uf0b7": "\u2022",
-        "\uf0a7": "\u25aa",
-        "\uf0d8": "\u25e6",
-    }.get(value, value)
+    return normalize_bullet_marker(value)
 
 
 def _format_counter(value: int, marker_type: str | None) -> str:
