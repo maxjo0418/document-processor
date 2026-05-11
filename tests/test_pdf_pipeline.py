@@ -581,6 +581,106 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.paragraphs[2].tables[0].cells[0][0].text, "  A1  ")
         self.assertEqual(doc.paragraphs[2].tables[0].cells[0][0].paragraphs[0].text, "  A1  ")
 
+    def test_build_doc_ir_from_odl_result_preserves_nested_list_children_in_table_cells(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": "460,465 30,000",
+                                            "page number": 1,
+                                        },
+                                        {
+                                            "type": "list",
+                                            "page number": 1,
+                                            "list items": [
+                                                {
+                                                    "type": "list item",
+                                                    "content": "6,270",
+                                                    "page number": 1,
+                                                    "kids": [
+                                                        {
+                                                            "type": "list",
+                                                            "page number": 1,
+                                                            "list items": [
+                                                                {
+                                                                    "type": "list item",
+                                                                    "content": "2,700 1,050",
+                                                                    "page number": 1,
+                                                                    "kids": [
+                                                                        {
+                                                                            "type": "paragraph",
+                                                                            "content": "7,560",
+                                                                            "page number": 1,
+                                                                        }
+                                                                    ],
+                                                                },
+                                                                {
+                                                                    "type": "list item",
+                                                                    "content": "3,000 3,000",
+                                                                    "page number": 1,
+                                                                },
+                                                            ],
+                                                        }
+                                                    ],
+                                                }
+                                            ],
+                                        },
+                                        {
+                                            "type": "paragraph",
+                                            "content": "18,720 44,400",
+                                            "page number": 1,
+                                        },
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        cell = doc.paragraphs[0].tables[0].cells[0][0]
+        self.assertEqual(
+            cell.text.splitlines(),
+            [
+                "460,465 30,000",
+                "6,270",
+                "2,700 1,050",
+                "7,560",
+                "3,000 3,000",
+                "18,720 44,400",
+            ],
+        )
+        self.assertEqual(
+            "\n".join(paragraph.text for paragraph in cell.paragraphs).splitlines(),
+            [
+                "460,465 30,000",
+                "6,270",
+                "2,700 1,050",
+                "7,560",
+                "3,000 3,000",
+                "18,720 44,400",
+            ],
+        )
+
     def test_build_doc_ir_from_odl_result_uses_additive_spans_for_multi_run_text(self) -> None:
         raw_document = {
             "file name": "sample.pdf",
