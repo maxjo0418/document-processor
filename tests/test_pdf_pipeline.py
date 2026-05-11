@@ -906,6 +906,61 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual([run.text for run in doc.paragraphs[0].runs], ["First line", " Second line"])
         self.assertNotIn("<br>Second line", html)
 
+    def test_build_doc_ir_from_odl_result_splits_stacked_numeric_spans_into_visual_lines(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": "0 52,000",
+                                            "page number": 1,
+                                            "spans": [
+                                                {
+                                                    "type": "text chunk",
+                                                    "content": "0",
+                                                    "page number": 1,
+                                                    "bounding box": [50, 80, 55, 92],
+                                                },
+                                                {
+                                                    "type": "text chunk",
+                                                    "content": "52,000",
+                                                    "page number": 1,
+                                                    "bounding box": [20, 62, 55, 74],
+                                                },
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        cell = doc.paragraphs[0].tables[0].cells[0][0]
+        html = doc.to_html()
+
+        self.assertEqual(cell.text, "0\n52,000")
+        self.assertEqual(cell.paragraphs[0].text, "0\n52,000")
+        self.assertIn("0<br>52,000", html)
+
     def test_build_doc_ir_from_odl_result_expands_explicit_wide_space_spans(self) -> None:
         raw_document = {
             "file name": "sample.pdf",

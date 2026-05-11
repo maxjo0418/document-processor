@@ -35,7 +35,6 @@ from ..meta import (
     coerce_bbox,
     coerce_float,
     coerce_int,
-    extract_text_from_odl_children,
     extract_text_from_odl_node,
     node_value,
     normalize_align,
@@ -472,6 +471,7 @@ def _reconstruct_visual_run_text(runs: list[RunIR], *, raw_text: str) -> list[Ru
                 raw_positions[index],
             )
             if separator and _needs_separator(previous.text, run.text, separator):
+                separator = _visual_line_separator(previous.text, run.text, separator)
                 run = run.model_copy(update={"text": f"{separator}{run.text}"})
             reconstructed.append(run)
             continue
@@ -515,6 +515,24 @@ def _needs_separator(left_text: str, right_text: str, separator: str) -> bool:
     if separator.isspace():
         return not left_text.endswith((" ", "\t", "\n")) and not right_text.startswith((" ", "\t", "\n"))
     return not right_text.startswith(separator)
+
+
+def _visual_line_separator(left_text: str, right_text: str, separator: str) -> str:
+    if (
+        separator.isspace()
+        and "\n" not in separator
+        and _is_numeric_line_text(left_text)
+        and _is_numeric_line_text(right_text)
+    ):
+        return "\n"
+    return separator
+
+
+def _is_numeric_line_text(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped or not any(char.isdigit() for char in stripped):
+        return False
+    return all(char.isdigit() or char in ",.-+△▲−()[]/%" for char in stripped)
 
 
 def _expand_wide_space_span_text(
@@ -858,18 +876,19 @@ def _append_table_cell(
     if cell_style is not None:
         cell_style.rowspan = rowspan
         cell_style.colspan = colspan
+    paragraphs = _cell_paragraphs(
+        children,
+        cell_unit_id=cell_unit_id,
+        default_page_number=default_page_number,
+        assets=assets,
+    )
     table.append_cell(
         TableCellIR(
             **_pdf_node_kwargs("cell", cell_unit_id),
-            text=extract_text_from_odl_children(children),
+            text="\n".join(paragraph.text for paragraph in paragraphs if paragraph.text),
             bbox=cell_bbox,
             cell_style=cell_style,
-            paragraphs=_cell_paragraphs(
-                children,
-                cell_unit_id=cell_unit_id,
-                default_page_number=default_page_number,
-                assets=assets,
-            ),
+            paragraphs=paragraphs,
         ),
         row_index=row_index,
         col_index=col_index,
