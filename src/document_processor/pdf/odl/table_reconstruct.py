@@ -40,6 +40,8 @@ from .table_reconstruct_geometry import (
 from .table_reconstruct_rebuild import _rebuild_rows
 from .table_reconstruct_text import _learn_unit_separators, _presplit_merged_leaves
 
+_ENDPOINT_SPLIT_MIN_BAND_COVERAGE_RATIO = 0.85
+
 
 def preprocess_dotted_rule_splits(
     raw_document: dict[str, Any],
@@ -89,6 +91,11 @@ def preprocess_dotted_rule_splits(
                 for p in primitives
                 if "vertical_line_segment" in set(p.candidate_roles)
             ]
+            horizontal_rule_segments = [
+                p
+                for p in primitives
+                if "horizontal_line_segment" in set(p.candidate_roles)
+            ]
             if not dotted_h and not dotted_v and not vertical_rule_segments:
                 continue
 
@@ -114,11 +121,16 @@ def preprocess_dotted_rule_splits(
                     vertical_rule_segments,
                     nested_bboxes,
                 )
+                table_horizontal_rule_segments = _rules_outside(
+                    horizontal_rule_segments,
+                    nested_bboxes,
+                )
                 _apply_dotted_splits(
                     table,
                     table_dotted_h,
                     table_dotted_v,
                     vertical_rule_segments=table_vertical_rule_segments,
+                    horizontal_rule_segments=table_horizontal_rule_segments,
                 )
     finally:
         document.close()
@@ -176,6 +188,7 @@ def _apply_dotted_splits(
     dotted_v: list[PdfPreviewVisualPrimitive],
     *,
     vertical_rule_segments: list[PdfPreviewVisualPrimitive] | None = None,
+    horizontal_rule_segments: list[PdfPreviewVisualPrimitive] | None = None,
 ) -> None:
     table_bbox = coerce_bbox(table.get("bounding box"))
     if table_bbox is None:
@@ -218,6 +231,7 @@ def _apply_dotted_splits(
         cell_x_bands=cell_x_bands,
         sub_rect_y_splits=sub_rect_y_splits,
         vertical_rule_segments=vertical_rule_segments or [],
+        horizontal_rule_segments=horizontal_rule_segments or [],
     )
     if endpoint_splits:
         _merge_endpoint_splits(
@@ -368,6 +382,7 @@ def _vertical_endpoint_y_splits(
     virtual_rows = _virtual_rows_from_endpoint_points(
         _vertical_endpoint_points(
             table_bbox=table_bbox,
+            provisional_xs=provisional_xs,
             vertical_rule_segments=vertical_rule_segments,
             text_bboxes=text_bboxes,
         )
@@ -418,6 +433,7 @@ def _vertical_endpoint_splits(
     cell_x_bands: dict[int, list[tuple[float, float]]],
     sub_rect_y_splits: dict[tuple[int, int], list[float]],
     vertical_rule_segments: list[PdfPreviewVisualPrimitive],
+    horizontal_rule_segments: list[PdfPreviewVisualPrimitive] | None = None,
 ) -> list[_EndpointSplit]:
     if not vertical_rule_segments or len(provisional_xs) < 2:
         return []
@@ -426,6 +442,7 @@ def _vertical_endpoint_splits(
     virtual_rows = _virtual_rows_from_endpoint_points(
         _vertical_endpoint_points(
             table_bbox=table_bbox,
+            provisional_xs=provisional_xs,
             vertical_rule_segments=vertical_rule_segments,
             text_bboxes=text_bboxes,
         )
@@ -440,18 +457,20 @@ def _vertical_endpoint_splits(
     )
     endpoint_splits: list[_EndpointSplit] = []
     for row in virtual_rows:
-        row_interval = (
-            max(table_bbox.left_pt, row.x_left),
-            min(table_bbox.right_pt, row.x_right),
+        row_intervals = _endpoint_row_intervals(
+            row,
+            table_bbox=table_bbox,
+            horizontal_rule_segments=horizontal_rule_segments or [],
         )
-        if row_interval[1] - row_interval[0] < _AXIS_MERGE_TOL_PT:
+        if not row_intervals:
             continue
         covered = _coverage_at_y(row.y, coverage_by_y)
-        uncovered_ranges = _subtract_covered_ranges(row_interval, covered)
-        for x_left, x_right in uncovered_ranges:
-            if x_right - x_left < _AXIS_MERGE_TOL_PT:
-                continue
-            endpoint_splits.append(_EndpointSplit(y=row.y, x_left=x_left, x_right=x_right))
+        for row_interval in row_intervals:
+            uncovered_ranges = _subtract_covered_ranges(row_interval, covered)
+            for x_left, x_right in uncovered_ranges:
+                if x_right - x_left < _AXIS_MERGE_TOL_PT:
+                    continue
+                endpoint_splits.append(_EndpointSplit(y=row.y, x_left=x_left, x_right=x_right))
 
     endpoint_splits = _dedupe_endpoint_splits(endpoint_splits)
     if not endpoint_splits:
@@ -484,6 +503,35 @@ def _vertical_endpoint_splits(
     return endpoint_splits
 
 
+def _endpoint_row_intervals(
+    row: _VirtualEndpointRow,
+    *,
+    table_bbox: PdfBoundingBox,
+    horizontal_rule_segments: list[PdfPreviewVisualPrimitive],
+) -> list[tuple[float, float]]:
+    row_interval = (
+        max(table_bbox.left_pt, row.x_left),
+        min(table_bbox.right_pt, row.x_right),
+    )
+    if row_interval[1] - row_interval[0] < _AXIS_MERGE_TOL_PT:
+        return []
+
+    intervals: list[tuple[float, float]] = []
+    for segment in horizontal_rule_segments:
+        if "horizontal_line_segment" not in set(segment.candidate_roles):
+            continue
+        bbox = segment.bounding_box
+        if not (bbox.bottom_pt - _AXIS_MERGE_TOL_PT <= row.y <= bbox.top_pt + _AXIS_MERGE_TOL_PT):
+            continue
+        x_left = max(row_interval[0], bbox.left_pt)
+        x_right = min(row_interval[1], bbox.right_pt)
+        if x_right - x_left < _AXIS_MERGE_TOL_PT:
+            continue
+        intervals.append((x_left, x_right))
+
+    return _merge_intervals(intervals) or [row_interval]
+
+
 def _virtual_rows_from_endpoint_points(
     points: list[tuple[float, float]],
 ) -> list[_VirtualEndpointRow]:
@@ -511,6 +559,7 @@ def _virtual_row_overlaps_provisional_grid(
 def _vertical_endpoint_points(
     *,
     table_bbox: PdfBoundingBox,
+    provisional_xs: list[float],
     vertical_rule_segments: list[PdfPreviewVisualPrimitive],
     text_bboxes: list[PdfBoundingBox],
 ) -> list[tuple[float, float]]:
@@ -522,6 +571,8 @@ def _vertical_endpoint_points(
             <= x
             <= table_bbox.right_pt + _AXIS_MERGE_TOL_PT
         ):
+            continue
+        if not _x_on_provisional_grid(x, provisional_xs):
             continue
         bbox = segment.bounding_box
         if not _segment_touches_table_y_span(bbox, table_bbox):
@@ -536,6 +587,10 @@ def _vertical_endpoint_points(
                 continue
             points.append((x, y))
     return points
+
+
+def _x_on_provisional_grid(x: float, provisional_xs: list[float]) -> bool:
+    return any(abs(x - boundary) <= _AXIS_MERGE_TOL_PT for boundary in provisional_xs)
 
 
 def _vertical_segment_x_center(
@@ -607,20 +662,39 @@ def _merge_endpoint_splits(
     sub_rect_y_splits: dict[tuple[int, int], list[float]],
     endpoint_splits: list[_EndpointSplit],
 ) -> None:
+    endpoint_splits_by_y: dict[float, list[_EndpointSplit]] = {}
+    for split in endpoint_splits:
+        bucket_y = _nearby_value(endpoint_splits_by_y, split.y) or split.y
+        endpoint_splits_by_y.setdefault(bucket_y, []).append(split)
+
     for idx, cell in enumerate(raw_cells):
         bbox = coerce_bbox(cell.get("bounding box"))
         if bbox is None:
             continue
         for band_idx, (x_left, x_right) in enumerate(cell_x_bands.get(idx, [])):
             splits = sub_rect_y_splits.setdefault((idx, band_idx), [])
-            for split in endpoint_splits:
-                if not (bbox.bottom_pt + _INTERIOR_PAD_PT < split.y < bbox.top_pt - _INTERIOR_PAD_PT):
+            for split_y, y_splits in endpoint_splits_by_y.items():
+                if not (bbox.bottom_pt + _INTERIOR_PAD_PT < split_y < bbox.top_pt - _INTERIOR_PAD_PT):
                     continue
-                overlap = _interval_overlap((x_left, x_right), (split.x_left, split.x_right))
+                overlap_intervals = [
+                    (
+                        max(x_left, split.x_left),
+                        min(x_right, split.x_right),
+                    )
+                    for split in y_splits
+                    if _interval_overlap((x_left, x_right), (split.x_left, split.x_right)) >= _AXIS_MERGE_TOL_PT
+                ]
+                overlap = sum(right - left for left, right in _merge_intervals(overlap_intervals))
                 band_width = max(x_right - x_left, 0.0)
-                if overlap < _AXIS_MERGE_TOL_PT or (band_width > 0 and overlap / band_width < 0.5):
+                if (
+                    overlap < _AXIS_MERGE_TOL_PT
+                    or (
+                        band_width > 0
+                        and overlap / band_width < _ENDPOINT_SPLIT_MIN_BAND_COVERAGE_RATIO
+                    )
+                ):
                     continue
-                splits.append(split.y)
+                splits.append(split_y)
             sub_rect_y_splits[(idx, band_idx)] = _dedupe_close(
                 sorted(splits),
                 _AXIS_MERGE_TOL_PT,

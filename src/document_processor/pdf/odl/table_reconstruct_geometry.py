@@ -10,6 +10,7 @@ from ..preview.models import PdfPreviewVisualPrimitive
 
 _AXIS_MERGE_TOL_PT = 2.0
 _INTERIOR_PAD_PT = 2.0
+_CONTAINMENT_PAD_PT = 2.0
 _CELL_COVERAGE_RATIO = 0.7
 
 
@@ -19,7 +20,11 @@ class _DottedSplit:
     border_css: str
 
 
-def _bbox_encloses(outer: PdfBoundingBox, inner: PdfBoundingBox, pad: float = 1.0) -> bool:
+def _bbox_encloses(
+    outer: PdfBoundingBox,
+    inner: PdfBoundingBox,
+    pad: float = _CONTAINMENT_PAD_PT,
+) -> bool:
     return (
         inner.left_pt >= outer.left_pt - pad
         and inner.right_pt <= outer.right_pt + pad
