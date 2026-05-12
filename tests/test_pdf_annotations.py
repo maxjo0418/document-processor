@@ -13,6 +13,8 @@ from document_processor import (
     PageInfo,
     ParagraphIR,
     RunIR,
+    TableCellIR,
+    TableIR,
     apply_pdf_annotations,
     validate_pdf_annotations,
 )
@@ -97,6 +99,7 @@ class PdfAnnotationApiTests(unittest.TestCase):
             subtypes = [annotation["/Subtype"] for annotation in annotations]
             self.assertIn("/Highlight", subtypes)
             self.assertIn("/Text", subtypes)
+            self.assertIn("/Popup", subtypes)
 
             highlight = next(annotation for annotation in annotations if annotation["/Subtype"] == "/Highlight")
             self.assertEqual(highlight["/Subj"], "Exam point")
@@ -110,6 +113,10 @@ class PdfAnnotationApiTests(unittest.TestCase):
             self.assertEqual(round(float(note["/CA"]), 2), 0.9)
             self.assertEqual([round(float(value), 3) for value in note["/C"]], [0.502, 0.871, 0.918])
             self.assertLess(float(note["/Rect"][2]), 50)
+
+            popup = next(annotation for annotation in annotations if annotation["/Subtype"] == "/Popup")
+            self.assertEqual(popup["/Parent"].get_object()["/Subtype"], "/Text")
+            self.assertEqual(note["/Popup"].get_object()["/Subtype"], "/Popup")
 
     def test_apply_pdf_annotations_uses_selected_text_as_highlight_even_with_note(self) -> None:
         from pypdf import PdfReader
@@ -155,6 +162,43 @@ class PdfAnnotationApiTests(unittest.TestCase):
 
             self.assertFalse(validation.ok)
             self.assertEqual(validation.issues[0].code, "missing_bbox")
+
+    def test_validate_pdf_annotations_handles_unrelated_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.pdf"
+            self._write_blank_pdf(source)
+            doc = self._build_pdf_doc(source)
+            doc.paragraphs.append(
+                ParagraphIR(
+                    node_id="p_table",
+                    page_number=1,
+                    bbox=BoundingBox(left_pt=50, bottom_pt=50, right_pt=250, top_pt=90),
+                    content=[
+                        TableIR(
+                            node_id="tbl_sample",
+                            row_count=1,
+                            col_count=1,
+                            bbox=BoundingBox(left_pt=50, bottom_pt=50, right_pt=250, top_pt=90),
+                            cells=[
+                                [
+                                    TableCellIR(
+                                        node_id="cell_sample",
+                                        text="Table cell",
+                                        bbox=BoundingBox(left_pt=55, bottom_pt=55, right_pt=245, top_pt=85),
+                                    )
+                                ]
+                            ],
+                        )
+                    ],
+                )
+            )
+
+            validation = validate_pdf_annotations(
+                document=DocumentInput(source_path=str(source), doc_ir=doc),
+                annotations=[DocAnnotation(target_id="p_target", color="#FFCC80")],
+            )
+
+            self.assertTrue(validation.ok, validation.issues)
 
 
 if __name__ == "__main__":

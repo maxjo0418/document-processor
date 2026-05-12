@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.annotations import Highlight, Text
+from pypdf.annotations import Highlight, Popup, Text
 from pypdf.generic import ArrayObject, FloatObject, NameObject, TextStringObject
 
 from ..api_types import AnnotationValidationIssue, DocAnnotation
@@ -221,7 +221,7 @@ def _build_pdf_target_location_index(doc: DocIR) -> dict[str, _PdfTargetLocation
 
     def register_table(table: TableIR, page_number: int | None) -> None:
         register(table.node_id, page_number, table.bbox)
-        for cell in table.cells:
+        for cell in table.iter_cells():
             register_cell(cell, page_number)
 
     def register_cell(cell: TableCellIR, page_number: int | None) -> None:
@@ -332,10 +332,11 @@ def _add_pdf_annotation(writer: PdfWriter, item: _ResolvedPdfAnnotation) -> None
 
     if annotation.note and annotation.note.strip():
         note_rect = _note_rect_from_target_rect(rect)
+        popup_open = _metadata_bool(annotation, "popup_open", default=True)
         note = Text(
             text=annotation.note,
             rect=note_rect,
-            open=False,
+            open=popup_open,
             flags=4,
         )
         note[NameObject("/Name")] = NameObject(_metadata_name(annotation, "icon", default="/Key"))
@@ -347,7 +348,13 @@ def _add_pdf_annotation(writer: PdfWriter, item: _ResolvedPdfAnnotation) -> None
             default_subject="Note",
             default_opacity=0.95,
         )
-        writer.add_annotation(page_number=page_index, annotation=note)
+        added_note = writer.add_annotation(page_number=page_index, annotation=note)
+        popup = Popup(
+            rect=_popup_rect_from_note_rect(note_rect),
+            parent=added_note,
+            open=popup_open,
+        )
+        writer.add_annotation(page_number=page_index, annotation=popup)
         return
 
     raise ValueError("Unsupported PDF annotation state.")
@@ -416,6 +423,13 @@ def _metadata_float(annotation: DocAnnotation, key: str, *, default: float | Non
     return default
 
 
+def _metadata_bool(annotation: DocAnnotation, key: str, *, default: bool) -> bool:
+    value = annotation.metadata.get(key)
+    if isinstance(value, bool):
+        return value
+    return default
+
+
 def _metadata_name(annotation: DocAnnotation, key: str, *, default: str) -> str:
     value = annotation.metadata.get(key)
     if isinstance(value, str):
@@ -436,6 +450,16 @@ def _note_rect_from_target_rect(rect: tuple[float, float, float, float]) -> tupl
     y2 = top
     y1 = max(0.0, y2 - icon_size)
     return (x1, y1, x2, y2)
+
+
+def _popup_rect_from_note_rect(rect: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    _left, _bottom, right, top = rect
+    gap = 6.0
+    width = 240.0
+    height = 110.0
+    x1 = right + gap
+    y2 = top
+    return (x1, max(0.0, y2 - height), x1 + width, y2)
 
 
 def _color_array(color: str) -> ArrayObject:
