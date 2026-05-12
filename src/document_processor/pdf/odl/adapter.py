@@ -44,6 +44,7 @@ from ..meta import (
 
 _STRIP_CONNECTOR_CHARS = frozenset({"➡", "→", "➜", "➝", "←", "↑", "↓", "↔", "↕", ""})
 _STRIP_ROW_TOLERANCE_PT = 18.0
+_CELL_VISUAL_ROW_TOLERANCE_PT = 10.0
 _LINE_CENTER_TOLERANCE_RATIO = 0.55
 _LINE_MIN_CENTER_TOLERANCE_PT = 2.0
 _LINE_OVERLAP_RATIO = 0.45
@@ -741,7 +742,7 @@ def _cell_paragraphs(
                             child,
                             unit_id=f"{unit_id}.tbl1",
                             assets=assets,
-                                        )
+                        )
                     ],
                 )
             )
@@ -752,6 +753,18 @@ def _cell_paragraphs(
             if paragraph.page_number is None:
                 paragraph.page_number = default_page_number
             paragraphs.append(paragraph)
+            continue
+        if child_type == "list":
+            child_index += 1
+            list_paragraphs = _paragraphs_from_list_node(
+                child,
+                unit_prefix=unit_id,
+                assets=assets,
+            )
+            for paragraph in list_paragraphs:
+                if paragraph.page_number is None:
+                    paragraph.page_number = default_page_number
+            paragraphs.extend(list_paragraphs)
             continue
         paragraph = _paragraph_from_text_node(child, unit_id=unit_id)
         if paragraph is None:
@@ -769,7 +782,74 @@ def _cell_paragraphs(
                 bbox=None,
             )
         )
-    return paragraphs
+    return _sort_cell_paragraphs_by_visual_position(paragraphs)
+
+
+def _sort_cell_paragraphs_by_visual_position(
+    paragraphs: list[ParagraphIR],
+) -> list[ParagraphIR]:
+    positioned = [
+        (index, paragraph)
+        for index, paragraph in enumerate(paragraphs)
+        if paragraph.bbox is not None
+    ]
+    if len(positioned) < 2:
+        return paragraphs
+
+    rows: list[list[tuple[int, ParagraphIR]]] = []
+    row_pages: list[int] = []
+    row_tops: list[float] = []
+    for index, paragraph in positioned:
+        bbox = paragraph.bbox
+        if bbox is None:
+            continue
+        page_number = paragraph.page_number or 0
+        assigned_row_index: int | None = None
+        for row_index, (row_page, row_top) in enumerate(zip(row_pages, row_tops)):
+            if (
+                row_page == page_number
+                and abs(bbox.top_pt - row_top) <= _CELL_VISUAL_ROW_TOLERANCE_PT
+            ):
+                assigned_row_index = row_index
+                break
+        if assigned_row_index is None:
+            rows.append([(index, paragraph)])
+            row_pages.append(page_number)
+            row_tops.append(bbox.top_pt)
+            continue
+
+        rows[assigned_row_index].append((index, paragraph))
+        row_tops[assigned_row_index] = sum(
+            member.bbox.top_pt
+            for _member_index, member in rows[assigned_row_index]
+            if member.bbox is not None
+        ) / len(rows[assigned_row_index])
+
+    rows.sort(
+        key=lambda row: (
+            row[0][1].page_number or 0,
+            -max(member.bbox.top_pt for _index, member in row if member.bbox is not None),
+            min(member.bbox.left_pt for _index, member in row if member.bbox is not None),
+        )
+    )
+    sorted_positioned: list[ParagraphIR] = []
+    for row in rows:
+        row.sort(
+            key=lambda item: (
+                item[1].bbox.left_pt if item[1].bbox is not None else float("inf"),
+                item[0],
+            )
+        )
+        sorted_positioned.extend(paragraph for _index, paragraph in row)
+
+    sorted_iter = iter(sorted_positioned)
+    sorted_paragraphs: list[ParagraphIR] = []
+    for paragraph in paragraphs:
+        if paragraph.bbox is None:
+            sorted_paragraphs.append(paragraph)
+        else:
+            sorted_paragraphs.append(next(sorted_iter))
+    return sorted_paragraphs
 
 
 def _iter_raw_table_cells(node: dict[str, Any]) -> list[dict[str, Any]]:
@@ -854,7 +934,9 @@ def _table_node_to_ir(
             unit_id=unit_id,
             assets=assets,
             default_page_number=_page_number_from_node(cell),
+            expand=False,
         )
+    table.expand_merged_cells()
     return table
 
 
@@ -871,6 +953,7 @@ def _append_table_cell(
     unit_id: str,
     assets: dict[str, ImageAsset],
     default_page_number: int | None,
+    expand: bool = True,
 ) -> None:
     cell_unit_id = f"{unit_id}.tr{row_index}.tc{col_index}"
     if cell_style is not None:
@@ -892,6 +975,7 @@ def _append_table_cell(
         ),
         row_index=row_index,
         col_index=col_index,
+        expand=expand,
     )
 
 
@@ -1095,14 +1179,6 @@ def _paragraphs_from_list_node(
         unit_id = f"{unit_prefix}.li{index}"
         item_paragraphs: list[ParagraphIR] = []
         item_geometry = _node_geometry(item)
-        paragraph = _paragraph_from_text_node(
-            item,
-            unit_id=unit_id,
-            paragraph_geometry=item_geometry,
-            run_geometry=item_geometry,
-        )
-        if paragraph is not None:
-            item_paragraphs.append(paragraph)
         child_paragraphs: list[ParagraphIR] = []
         for child_index, child in enumerate(item.get("kids", []), start=1):
             child_type = child.get("type")
@@ -1130,7 +1206,7 @@ def _paragraphs_from_list_node(
                                 child,
                                 unit_id=f"{child_unit_id}.tbl1",
                                 assets=assets,
-                                                )
+                            )
                         ],
                     )
                 )
@@ -1146,11 +1222,60 @@ def _paragraphs_from_list_node(
                 )
                 if nested_paragraph is not None:
                     child_paragraphs.append(nested_paragraph)
-        item_paragraphs.extend(
-            _collapse_table_connector_sequences(child_paragraphs, unit_prefix=unit_id)
+        collapsed_child_paragraphs = _collapse_table_connector_sequences(
+            child_paragraphs,
+            unit_prefix=unit_id,
         )
+        item_text = _list_item_text_without_child_duplicates(
+            item.get("content"),
+            collapsed_child_paragraphs,
+        )
+        if item_text:
+            item_node = (
+                item
+                if item_text == item.get("content")
+                else {**item, "content": item_text, "spans": []}
+            )
+            paragraph = _paragraph_from_text_node(
+                item_node,
+                unit_id=unit_id,
+                paragraph_geometry=item_geometry,
+                run_geometry=item_geometry,
+            )
+            if paragraph is not None:
+                item_paragraphs.append(paragraph)
+        item_paragraphs.extend(collapsed_child_paragraphs)
         paragraphs.extend(item_paragraphs)
     return paragraphs
+
+
+def _list_item_text_without_child_duplicates(
+    item_content: Any,
+    child_paragraphs: list[ParagraphIR],
+) -> str:
+    if not isinstance(item_content, str) or not item_content.strip():
+        return ""
+
+    item_lines = _normalized_text_lines(item_content)
+    child_lines = _normalized_text_lines(
+        "\n".join(paragraph.text for paragraph in child_paragraphs if paragraph.text)
+    )
+    if not item_lines or not child_lines:
+        return item_content
+
+    if child_lines[: len(item_lines)] == item_lines:
+        return ""
+
+    max_overlap = min(len(item_lines), len(child_lines))
+    for overlap_size in range(max_overlap, 0, -1):
+        if item_lines[-overlap_size:] == child_lines[:overlap_size]:
+            return "\n".join(item_lines[:-overlap_size])
+
+    return item_content
+
+
+def _normalized_text_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -1224,6 +1349,46 @@ def _fill_missing_bboxes_from_layout_regions(value: Any, region_bboxes: dict[str
     if isinstance(value, list):
         for child in value:
             _fill_missing_bboxes_from_layout_regions(child, region_bboxes)
+
+
+def _raw_table_signature(node: dict[str, Any]) -> tuple[str, int | None, tuple[float, float, float, float] | None] | None:
+    raw_table_id = _raw_table_id(node.get("id"))
+    if raw_table_id is None:
+        return None
+    bbox = coerce_bbox(node.get("bounding box"))
+    bbox_key = (
+        None
+        if bbox is None
+        else (
+            round(bbox.left_pt, 3),
+            round(bbox.bottom_pt, 3),
+            round(bbox.right_pt, 3),
+            round(bbox.top_pt, 3),
+        )
+    )
+    return (raw_table_id, _page_number_from_node(node), bbox_key)
+
+
+def _nested_raw_table_signatures(
+    root: Any,
+) -> set[tuple[str, int | None, tuple[float, float, float, float] | None]]:
+    table_signatures: set[tuple[str, int | None, tuple[float, float, float, float] | None]] = set()
+
+    def visit(value: Any, *, inside_table: bool) -> None:
+        if isinstance(value, dict):
+            is_table = value.get("type") == "table"
+            signature = _raw_table_signature(value) if is_table else None
+            if is_table and inside_table and signature is not None:
+                table_signatures.add(signature)
+            for child in value.values():
+                visit(child, inside_table=inside_table or is_table)
+            return
+        if isinstance(value, list):
+            for child in value:
+                visit(child, inside_table=inside_table)
+
+    visit(root, inside_table=False)
+    return table_signatures
 
 
 def _canonicalize_top_level_paragraphs(paragraphs: list[ParagraphIR]) -> list[ParagraphIR]:
@@ -1359,12 +1524,15 @@ def build_doc_ir_from_odl_result(
     assets: dict[str, ImageAsset] = {}
     paragraphs: list[ParagraphIR] = []
     table_continuation_links: list[_OdlTableContinuationLink] = []
+    nested_raw_table_signatures = _nested_raw_table_signatures(raw_document.get("kids", []))
 
     order = 0
     for node in raw_document.get("kids", []):
         node_type = node.get("type")
         unit_id = f"p{order + 1}"
         if node_type == "table":
+            if _raw_table_signature(node) in nested_raw_table_signatures:
+                continue
             order += 1
             node_geometry = _node_geometry(node)
             paragraph_index = len(paragraphs)
@@ -1380,7 +1548,7 @@ def build_doc_ir_from_odl_result(
                             node,
                             unit_id=f"{unit_id}.tbl1",
                             assets=assets,
-                                        )
+                        )
                     ],
                 )
             )
@@ -1399,7 +1567,7 @@ def build_doc_ir_from_odl_result(
                 node,
                 unit_prefix=unit_id,
                 assets=assets,
-                )
+            )
             if list_paragraphs:
                 order += len(list_paragraphs)
                 paragraphs.extend(list_paragraphs)
@@ -1411,7 +1579,7 @@ def build_doc_ir_from_odl_result(
                 node,
                 unit_prefix=unit_id,
                 assets=assets,
-                )
+            )
             if container_paragraphs:
                 order += len(container_paragraphs)
                 paragraphs.extend(container_paragraphs)
@@ -1422,6 +1590,8 @@ def build_doc_ir_from_odl_result(
             for child in node.get("kids", []):
                 child_unit_id = f"p{order + 1}"
                 if child.get("type") == "table":
+                    if _raw_table_signature(child) in nested_raw_table_signatures:
+                        continue
                     order += 1
                     child_geometry = _node_geometry(child)
                     paragraph_index = len(paragraphs)
@@ -1437,7 +1607,7 @@ def build_doc_ir_from_odl_result(
                                     child,
                                     unit_id=f"{child_unit_id}.tbl1",
                                     assets=assets,
-                                                        )
+                                )
                             ],
                         )
                     )
@@ -1452,7 +1622,7 @@ def build_doc_ir_from_odl_result(
                         child,
                         unit_prefix=child_unit_id,
                         assets=assets,
-                                )
+                    )
                     if list_paragraphs:
                         order += len(list_paragraphs)
                         paragraphs.extend(list_paragraphs)
