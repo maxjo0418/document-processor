@@ -581,6 +581,440 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.paragraphs[2].tables[0].cells[0][0].text, "  A1  ")
         self.assertEqual(doc.paragraphs[2].tables[0].cells[0][0].paragraphs[0].text, "  A1  ")
 
+    def test_build_doc_ir_from_odl_result_preserves_nested_list_children_in_table_cells(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": "460,465 30,000",
+                                            "page number": 1,
+                                        },
+                                        {
+                                            "type": "list",
+                                            "page number": 1,
+                                            "list items": [
+                                                {
+                                                    "type": "list item",
+                                                    "content": "6,270",
+                                                    "page number": 1,
+                                                    "kids": [
+                                                        {
+                                                            "type": "list",
+                                                            "page number": 1,
+                                                            "list items": [
+                                                                {
+                                                                    "type": "list item",
+                                                                    "content": "2,700 1,050",
+                                                                    "page number": 1,
+                                                                    "kids": [
+                                                                        {
+                                                                            "type": "paragraph",
+                                                                            "content": "7,560",
+                                                                            "page number": 1,
+                                                                        }
+                                                                    ],
+                                                                },
+                                                                {
+                                                                    "type": "list item",
+                                                                    "content": "3,000 3,000",
+                                                                    "page number": 1,
+                                                                },
+                                                            ],
+                                                        }
+                                                    ],
+                                                }
+                                            ],
+                                        },
+                                        {
+                                            "type": "paragraph",
+                                            "content": "18,720 44,400",
+                                            "page number": 1,
+                                        },
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        cell = doc.paragraphs[0].tables[0].cells[0][0]
+        self.assertEqual(
+            cell.text.splitlines(),
+            [
+                "460,465 30,000",
+                "6,270",
+                "2,700 1,050",
+                "7,560",
+                "3,000 3,000",
+                "18,720 44,400",
+            ],
+        )
+        self.assertEqual(
+            "\n".join(paragraph.text for paragraph in cell.paragraphs).splitlines(),
+            [
+                "460,465 30,000",
+                "6,270",
+                "2,700 1,050",
+                "7,560",
+                "3,000 3,000",
+                "18,720 44,400",
+            ],
+        )
+
+    def test_build_doc_ir_from_odl_result_preserves_cell_list_tables_without_top_level_duplicate(self) -> None:
+        nested_table = {
+            "type": "table",
+            "id": 200,
+            "page number": 1,
+            "number of rows": 1,
+            "number of columns": 2,
+            "bounding box": [20, 20, 120, 60],
+            "rows": [
+                {
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "row number": 1,
+                            "column number": 1,
+                            "page number": 1,
+                            "kids": [
+                                {
+                                    "type": "paragraph",
+                                    "content": "사업명",
+                                    "page number": 1,
+                                }
+                            ],
+                        },
+                        {
+                            "type": "table cell",
+                            "row number": 1,
+                            "column number": 2,
+                            "page number": 1,
+                            "kids": [
+                                {
+                                    "type": "paragraph",
+                                    "content": "706,000",
+                                    "page number": 1,
+                                }
+                            ],
+                        },
+                    ]
+                }
+            ],
+        }
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "id": 100,
+                    "page number": 1,
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": "5. 사업규모",
+                                            "page number": 1,
+                                        },
+                                        {
+                                            "type": "list",
+                                            "page number": 1,
+                                            "list items": [
+                                                {
+                                                    "type": "list item",
+                                                    "content": "6. 사업추진절차\n계획수립\n사업수행",
+                                                    "page number": 1,
+                                                    "kids": [
+                                                        {
+                                                            "type": "text block",
+                                                            "page number": 1,
+                                                            "kids": [
+                                                                {
+                                                                    "type": "paragraph",
+                                                                    "content": "계획수립",
+                                                                    "page number": 1,
+                                                                }
+                                                            ],
+                                                        },
+                                                        {
+                                                            "type": "text block",
+                                                            "page number": 1,
+                                                            "kids": [
+                                                                {
+                                                                    "type": "paragraph",
+                                                                    "content": "사업수행",
+                                                                    "page number": 1,
+                                                                }
+                                                            ],
+                                                        },
+                                                    ],
+                                                },
+                                                {
+                                                    "type": "list item",
+                                                    "content": "- 시도분담금 내역",
+                                                    "page number": 1,
+                                                    "kids": [
+                                                        {
+                                                            "type": "list",
+                                                            "page number": 1,
+                                                            "list items": [
+                                                                {
+                                                                    "type": "list item",
+                                                                    "content": "- 시도분담금 내역",
+                                                                    "page number": 1,
+                                                                    "kids": [nested_table],
+                                                                }
+                                                            ],
+                                                        }
+                                                    ],
+                                                }
+                                            ],
+                                        },
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                },
+                nested_table,
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        self.assertEqual(len(doc.paragraphs), 1)
+        outer_cell = doc.paragraphs[0].tables[0].cells[0][0]
+        nested_tables = [
+            table
+            for paragraph in outer_cell.paragraphs
+            for table in paragraph.tables
+        ]
+        self.assertEqual(len(nested_tables), 1)
+        self.assertEqual(nested_tables[0].cells[0][0].text, "사업명")
+        self.assertEqual(nested_tables[0].cells[0][1].text, "706,000")
+        self.assertIn("- 시도분담금 내역", outer_cell.text)
+        self.assertEqual(outer_cell.text.splitlines().count("- 시도분담금 내역"), 1)
+        self.assertIn("6. 사업추진절차", outer_cell.text)
+        self.assertEqual(outer_cell.text.splitlines().count("계획수립"), 1)
+        self.assertEqual(outer_cell.text.splitlines().count("사업수행"), 1)
+        self.assertIn("사업명", outer_cell.text)
+
+    def test_build_doc_ir_from_odl_result_keeps_top_level_table_when_reused_id_has_different_geometry(self) -> None:
+        nested_table = {
+            "type": "table",
+            "id": 200,
+            "page number": 1,
+            "number of rows": 1,
+            "number of columns": 1,
+            "bounding box": [20, 20, 120, 60],
+            "rows": [
+                {
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "row number": 1,
+                            "column number": 1,
+                            "page number": 1,
+                            "kids": [
+                                {
+                                    "type": "paragraph",
+                                    "content": "nested page 1",
+                                    "page number": 1,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ],
+        }
+        top_level_reused_id_table = {
+            "type": "table",
+            "id": 200,
+            "page number": 2,
+            "number of rows": 1,
+            "number of columns": 1,
+            "bounding box": [20, 200, 120, 240],
+            "rows": [
+                {
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "row number": 1,
+                            "column number": 1,
+                            "page number": 2,
+                            "kids": [
+                                {
+                                    "type": "paragraph",
+                                    "content": "top level page 2",
+                                    "page number": 2,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ],
+        }
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 2,
+            "kids": [
+                {
+                    "type": "table",
+                    "id": 100,
+                    "page number": 1,
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "bounding box": [0, 0, 200, 100],
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [nested_table],
+                                }
+                            ]
+                        }
+                    ],
+                },
+                top_level_reused_id_table,
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        self.assertEqual(len(doc.paragraphs), 2)
+        self.assertEqual(doc.paragraphs[0].tables[0].cells[0][0].text, "nested page 1")
+        self.assertEqual(doc.paragraphs[1].tables[0].cells[0][0].text, "top level page 2")
+
+    def test_build_doc_ir_from_odl_result_orders_cell_children_by_visual_position(self) -> None:
+        nested_table = {
+            "type": "table",
+            "id": 200,
+            "page number": 1,
+            "number of rows": 1,
+            "number of columns": 1,
+            "bounding box": [20, 320, 120, 460],
+            "rows": [
+                {
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "row number": 1,
+                            "column number": 1,
+                            "page number": 1,
+                            "kids": [
+                                {
+                                    "type": "paragraph",
+                                    "content": "nested table",
+                                    "page number": 1,
+                                    "bounding box": [30, 380, 100, 430],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ],
+        }
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "id": 100,
+                    "page number": 1,
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": "4. 수혜대상",
+                                            "page number": 1,
+                                            "bounding box": [20, 500, 120, 520],
+                                        },
+                                        {
+                                            "type": "paragraph",
+                                            "content": "- 수혜대상 상세",
+                                            "page number": 1,
+                                            "bounding box": [26, 480, 150, 496],
+                                        },
+                                        {
+                                            "type": "paragraph",
+                                            "content": "5. 사업규모",
+                                            "page number": 1,
+                                            "bounding box": [20, 450, 120, 470],
+                                        },
+                                        {
+                                            "type": "paragraph",
+                                            "content": "6. 사업추진절차",
+                                            "page number": 1,
+                                            "bounding box": [20, 280, 120, 300],
+                                        },
+                                        nested_table,
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        cell = doc.paragraphs[0].tables[0].cells[0][0]
+        self.assertEqual(
+            cell.text.splitlines(),
+            [
+                "4. 수혜대상",
+                "- 수혜대상 상세",
+                "5. 사업규모",
+                "nested table",
+                "6. 사업추진절차",
+            ],
+        )
+
     def test_build_doc_ir_from_odl_result_uses_additive_spans_for_multi_run_text(self) -> None:
         raw_document = {
             "file name": "sample.pdf",
@@ -805,6 +1239,156 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(doc.paragraphs[0].text, "First line Second line")
         self.assertEqual([run.text for run in doc.paragraphs[0].runs], ["First line", " Second line"])
         self.assertNotIn("<br>Second line", html)
+
+    def test_build_doc_ir_from_odl_result_splits_stacked_numeric_spans_into_visual_lines(self) -> None:
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "number of rows": 1,
+                    "number of columns": 1,
+                    "rows": [
+                        {
+                            "cells": [
+                                {
+                                    "type": "table cell",
+                                    "row number": 1,
+                                    "column number": 1,
+                                    "page number": 1,
+                                    "kids": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": "0 52,000",
+                                            "page number": 1,
+                                            "spans": [
+                                                {
+                                                    "type": "text chunk",
+                                                    "content": "0",
+                                                    "page number": 1,
+                                                    "bounding box": [50, 80, 55, 92],
+                                                },
+                                                {
+                                                    "type": "text chunk",
+                                                    "content": "52,000",
+                                                    "page number": 1,
+                                                    "bounding box": [20, 62, 55, 74],
+                                                },
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+        cell = doc.paragraphs[0].tables[0].cells[0][0]
+        html = doc.to_html()
+
+        self.assertEqual(cell.text, "0\n52,000")
+        self.assertEqual(cell.paragraphs[0].text, "0\n52,000")
+        self.assertIn("0<br>52,000", html)
+
+    def test_build_doc_ir_from_odl_result_expands_rowspans_after_all_pdf_cells_are_added(self) -> None:
+        def cell(row: int, col: int, text: str, *, rowspan: int = 1) -> dict:
+            return {
+                "type": "table cell",
+                "row number": row,
+                "column number": col,
+                "row span": rowspan,
+                "column span": 1,
+                "page number": 1,
+                "kids": [
+                    {
+                        "type": "paragraph",
+                        "content": text,
+                        "page number": 1,
+                    }
+                ],
+            }
+
+        raw_document = {
+            "file name": "sample.pdf",
+            "number of pages": 1,
+            "kids": [
+                {
+                    "type": "table",
+                    "page number": 1,
+                    "number of rows": 4,
+                    "number of columns": 6,
+                    "rows": [
+                        {
+                            "cells": [
+                                cell(1, 1, "시·군명"),
+                                cell(1, 2, "예산(천원)"),
+                                cell(1, 3, "시·군명"),
+                                cell(1, 4, "예산(천원)"),
+                                cell(1, 5, "시·군명"),
+                                cell(1, 6, "예산(천원)"),
+                            ]
+                        },
+                        {
+                            "cells": [
+                                cell(2, 1, "동두천"),
+                                cell(2, 2, "836,238"),
+                                cell(2, 3, "안성"),
+                                cell(2, 4, "500,000"),
+                                cell(2, 5, "이천"),
+                                cell(2, 6, "1,670,536"),
+                            ]
+                        },
+                        {
+                            "cells": [
+                                cell(3, 1, "안산"),
+                                cell(3, 2, "3,215,176"),
+                                cell(3, 3, "양주"),
+                                cell(3, 4, "241,617"),
+                                cell(3, 5, "계", rowspan=2),
+                                cell(3, 6, "8,169,135", rowspan=2),
+                            ]
+                        },
+                        {
+                            "cells": [
+                                cell(4, 1, "포천"),
+                                cell(4, 2, "499,169"),
+                                cell(4, 3, "여주"),
+                                cell(4, 4, "1,206,399"),
+                            ]
+                        },
+                    ],
+                }
+            ],
+        }
+
+        doc = build_doc_ir_from_odl_result(raw_document, source_path="sample.pdf")
+
+        table = doc.paragraphs[0].tables[0]
+        self.assertEqual(table.row_count, 4)
+        self.assertEqual(table.col_count, 6)
+        self.assertEqual([len(row) for row in table.cells], [6, 6, 6, 6])
+        self.assertEqual(
+            [cell.text for cell in table.cells[3]],
+            ["포천", "499,169", "여주", "1,206,399", "계", "8,169,135"],
+        )
+        self.assertEqual(
+            [
+                (row_index, col_index, cell.text)
+                for row_index, col_index, cell in table.iter_cell_positions()
+                if row_index == 4
+            ],
+            [
+                (4, 1, "포천"),
+                (4, 2, "499,169"),
+                (4, 3, "여주"),
+                (4, 4, "1,206,399"),
+            ],
+        )
 
     def test_build_doc_ir_from_odl_result_expands_explicit_wide_space_spans(self) -> None:
         raw_document = {

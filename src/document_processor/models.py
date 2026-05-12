@@ -340,7 +340,14 @@ class TableIR(BaseModel, Generic[T]):
                 return row_index, col_index
         return None
 
-    def append_cell(self, cell: TableCellIR, *, row_index: int, col_index: int | None = None) -> None:
+    def append_cell(
+        self,
+        cell: TableCellIR,
+        *,
+        row_index: int,
+        col_index: int | None = None,
+        expand: bool = True,
+    ) -> None:
         if row_index < 1:
             raise ValueError("row_index must be 1-based.")
         while len(self.cells) < row_index:
@@ -350,7 +357,8 @@ class TableIR(BaseModel, Generic[T]):
             row.append(cell)
         else:
             row.insert(max(col_index - 1, 0), cell)
-        self.expand_merged_cells()
+        if expand:
+            self.expand_merged_cells()
 
     @computed_field
     def markdown(self) -> str:

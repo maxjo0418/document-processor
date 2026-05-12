@@ -10,6 +10,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from document_processor.pdf.meta import PdfBoundingBox
+from document_processor.pdf.odl.table_reconstruct_geometry import _bbox_encloses
 from document_processor.pdf.odl.table_reconstruct import (
     _apply_dotted_splits,
     _vertical_endpoint_y_splits,
@@ -65,6 +66,33 @@ def _vertical_line_segment(
         has_fill=True,
         has_stroke=False,
         candidate_roles=["vertical_line_segment"],
+    )
+
+
+def _horizontal_line_segment(
+    *,
+    left: float,
+    right: float,
+    y: float,
+    stroke_color: str = "#000000ff",
+    stroke_width_pt: float = 1.0,
+) -> PdfPreviewVisualPrimitive:
+    return PdfPreviewVisualPrimitive(
+        page_number=1,
+        draw_order=1,
+        object_type="path",
+        bounding_box=PdfBoundingBox(
+            left_pt=left,
+            bottom_pt=y - 0.05,
+            right_pt=right,
+            top_pt=y + 0.05,
+        ),
+        fill_color=stroke_color,
+        stroke_color=stroke_color,
+        stroke_width_pt=stroke_width_pt,
+        has_fill=True,
+        has_stroke=False,
+        candidate_roles=["horizontal_line_segment"],
     )
 
 
@@ -134,6 +162,22 @@ def _collect_cells_for_test(table: dict) -> list[dict]:
 
 
 class DottedRuleSplitTests(unittest.TestCase):
+    def test_bbox_encloses_tolerates_small_pdf_extraction_overflow_for_nested_tables(self) -> None:
+        outer = PdfBoundingBox(
+            left_pt=43.776,
+            bottom_pt=47.648,
+            right_pt=554.462,
+            top_pt=758.351,
+        )
+        inner = PdfBoundingBox(
+            left_pt=189.078,
+            bottom_pt=299.133,
+            right_pt=555.661,
+            top_pt=465.271,
+        )
+
+        self.assertTrue(_bbox_encloses(outer, inner))
+
     def test_no_dotted_rules_leaves_table_unchanged(self) -> None:
         table = _single_cell_table(
             paragraphs=[_paragraph("Only", left=14.0, bottom=20.0, right=108.0, top=80.0)]
@@ -727,6 +771,129 @@ class DottedRuleSplitTests(unittest.TestCase):
         self.assertEqual(cells_by_pos[(2, 1)]["paragraphs"][0]["content"], "A bottom")
         self.assertEqual(cells_by_pos[(1, 3)]["paragraphs"][0]["content"], "C top")
         self.assertEqual(cells_by_pos[(2, 3)]["paragraphs"][0]["content"], "C bottom")
+
+    def test_fragmented_endpoint_intervals_below_coverage_threshold_do_not_split_large_cell(self) -> None:
+        table = {
+            "type": "table",
+            "page number": 1,
+            "bounding box": [10.0, 10.0, 130.0, 90.0],
+            "number of rows": 1,
+            "number of columns": 1,
+            "grid row boundaries": [90.0, 10.0],
+            "grid column boundaries": [10.0, 130.0],
+            "rows": [
+                {
+                    "type": "table row",
+                    "row number": 1,
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 1,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [10.0, 10.0, 130.0, 90.0],
+                            "kids": [
+                                _paragraph("Top", left=15.0, bottom=62.0, right=125.0, top=72.0),
+                                _paragraph("Bottom", left=15.0, bottom=28.0, right=125.0, top=38.0),
+                            ],
+                            "paragraphs": [
+                                _paragraph("Top", left=15.0, bottom=62.0, right=125.0, top=72.0),
+                                _paragraph("Bottom", left=15.0, bottom=28.0, right=125.0, top=38.0),
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+        vertical_segments = [
+            _vertical_line_segment(x=12.0, bottom=50.0, top=70.0),
+            _vertical_line_segment(x=32.0, bottom=50.0, top=70.0),
+            _vertical_line_segment(x=52.0, bottom=50.0, top=70.0),
+            _vertical_line_segment(x=128.0, bottom=50.0, top=70.0),
+        ]
+        horizontal_segments = [
+            _horizontal_line_segment(left=12.0, right=32.0, y=50.0),
+            _horizontal_line_segment(left=52.0, right=128.0, y=50.0),
+        ]
+
+        _apply_dotted_splits(
+            table,
+            dotted_h=[],
+            dotted_v=[],
+            vertical_rule_segments=vertical_segments,
+            horizontal_rule_segments=horizontal_segments,
+        )
+
+        self.assertEqual(table["number of rows"], 1)
+
+    def test_chart_internal_endpoint_segments_do_not_split_parent_table_cell(self) -> None:
+        table = {
+            "type": "table",
+            "page number": 1,
+            "bounding box": [0.0, 0.0, 200.0, 200.0],
+            "number of rows": 1,
+            "number of columns": 2,
+            "grid row boundaries": [200.0, 0.0],
+            "grid column boundaries": [0.0, 50.0, 200.0],
+            "rows": [
+                {
+                    "type": "table row",
+                    "row number": 1,
+                    "cells": [
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 1,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [0.0, 0.0, 50.0, 200.0],
+                            "kids": [_paragraph("Label", left=10.0, bottom=90.0, right=40.0, top=110.0)],
+                            "paragraphs": [_paragraph("Label", left=10.0, bottom=90.0, right=40.0, top=110.0)],
+                        },
+                        {
+                            "type": "table cell",
+                            "page number": 1,
+                            "row number": 1,
+                            "column number": 2,
+                            "row span": 1,
+                            "column span": 1,
+                            "bounding box": [50.0, 0.0, 200.0, 200.0],
+                            "kids": [
+                                _paragraph("Top", left=70.0, bottom=155.0, right=180.0, top=170.0),
+                                _paragraph("Middle", left=70.0, bottom=95.0, right=180.0, top=110.0),
+                                _paragraph("Bottom", left=70.0, bottom=35.0, right=180.0, top=50.0),
+                            ],
+                            "paragraphs": [
+                                _paragraph("Top", left=70.0, bottom=155.0, right=180.0, top=170.0),
+                                _paragraph("Middle", left=70.0, bottom=95.0, right=180.0, top=110.0),
+                                _paragraph("Bottom", left=70.0, bottom=35.0, right=180.0, top=50.0),
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+        chart_vertical_segments = [
+            _vertical_line_segment(x=55.0, bottom=80.0, top=120.0),
+            _vertical_line_segment(x=195.0, bottom=80.0, top=120.0),
+        ]
+        chart_horizontal_segments = [
+            _horizontal_line_segment(left=55.0, right=195.0, y=80.0),
+            _horizontal_line_segment(left=55.0, right=195.0, y=120.0),
+        ]
+
+        _apply_dotted_splits(
+            table,
+            dotted_h=[],
+            dotted_v=[],
+            vertical_rule_segments=chart_vertical_segments,
+            horizontal_rule_segments=chart_horizontal_segments,
+        )
+
+        self.assertEqual(table["number of rows"], 1)
 
     def test_vertical_segment_endpoints_split_existing_row_gap_in_merged_cell(self) -> None:
         table = {

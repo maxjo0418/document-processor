@@ -186,13 +186,24 @@ def extract_text_from_odl_node(node: dict[str, Any]) -> str:
         return "\n".join(row for row in rows if row)
     if node_type == "list":
         items = [
-            extract_text_from_odl_node(item)
+            _extract_text_from_odl_list_item(item)
             for item in node.get("list items", [])
         ]
         return "\n".join(item for item in items if item)
     if node_type in {"header", "footer", "text block"}:
         return extract_text_from_odl_children(node.get("kids", []))
     return ""
+
+
+def _extract_text_from_odl_list_item(node: dict[str, Any]) -> str:
+    parts: list[str] = []
+    content = node.get("content")
+    if isinstance(content, str) and content:
+        parts.append(content)
+    child_text = extract_text_from_odl_children(node.get("kids", []))
+    if child_text:
+        parts.append(child_text)
+    return "\n".join(parts)
 
 
 __all__ = [
